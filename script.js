@@ -10,10 +10,51 @@
 const SUPA_URL = 'https://ymkgqqerdocfcgyphfzs.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlta2dxcWVyZG9jZmNneXBoZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0ODA3MzUsImV4cCI6MjA5NTA1NjczNX0.SqwwSpwvsstfumhpTJasSsGMbe0LAm7Z3N-H0U2PoVc';
 
-/* Supabase table names */
-const CART_TABLE    = 'store_carts';
-const SESSION_TABLE = 'store_sessions';
-const PREFS_TABLE   = 'store_preferences';
+/* localStorage key used by the admin dashboard */
+const SHARED_INV_KEY = 'finexy_shared_inv';
+
+/* ─── DISCOUNTS: read from localStorage (set by admin panel) ── */
+const DISC_KEY = 'finexy_discounts';
+
+function getStorefrontDiscount(sku) {
+  try {
+    const raw = localStorage.getItem(DISC_KEY);
+    if (!raw) return null;
+    const list = JSON.parse(raw);
+    const now  = Date.now();
+    return list.find(d => d.sku === sku && new Date(d.expiresAt).getTime() > now) || null;
+  } catch(_) { return null; }
+}
+
+function fmtDiscCountdown(expiresAt) {
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  if (diff <= 0) return 'Expired';
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  if (h >= 48) { const d = Math.floor(h/24); return `${d}d ${h%24}h remaining`; }
+  if (h >= 1)  return `${h}h ${m}m ${s}s remaining`;
+  return `${m}m ${s}s remaining`;
+}
+
+/* Start a global 1-second ticker that updates all discount countdown timers on the page */
+function startStorefrontDiscountTicker() {
+  clearInterval(window._sfDiscTicker);
+  window._sfDiscTicker = setInterval(() => {
+    document.querySelectorAll('[data-disc-expires]').forEach(el => {
+      const exp  = el.dataset.discExpires;
+      if (!exp) return;
+      const diff = new Date(exp).getTime() - Date.now();
+      if (diff <= 0) {
+        el.textContent = '⌛ Offer ended';
+        /* Trigger a silent product rebuild to hide expired discount */
+        setTimeout(() => rebuildAll(), 600);
+      } else {
+        el.textContent = `⏱ ${fmtDiscCountdown(exp)}`;
+      }
+    });
+  }, 1000);
+}
 
 /* ─── CATEGORY MAP: admin category name → store category id ─── */
 const ADMIN_CAT_MAP = {
@@ -55,10 +96,24 @@ function adminRowToStoreProduct(row) {
   const sizesMatch   = rawDesc.match(/\|\|s:([^\|][^\|]*(?:\|[^\|][^\|]*)*)\|\|/);
   const colors       = colorsMatch ? colorsMatch[1].split('|').map(s=>s.trim()).filter(Boolean) : [];
   const sizes        = sizesMatch  ? sizesMatch[1].split('|').map(s=>s.trim()).filter(Boolean)  : [];
+  /* Parse reviews array encoded as ||rv:[...]|| */
+  let reviewsArr = [];
+  try {
+    const rvMatch = rawDesc.match(/\|\|rv:(\[.*?\])\|\|/s);
+    if (rvMatch) reviewsArr = JSON.parse(rvMatch[1]);
+  } catch(_) { reviewsArr = []; }
+  /* Recalculate avg rating from reviews if reviews exist */
+  let computedRating = rating;
+  if (reviewsArr.length > 0) {
+    computedRating = Math.round(
+      (reviewsArr.reduce((s, rv) => s + (rv.stars || 0), 0) / reviewsArr.length) * 10
+    ) / 10;
+  }
   const cleanDesc    = rawDesc
     .replace(/\|\|r:[0-9.]+\|\|/, '')
     .replace(/\|\|c:[^\|]*(?:\|[^\|]*)*\|\|/, '')
     .replace(/\|\|s:[^\|]*(?:\|[^\|]*)*\|\|/, '')
+    .replace(/\|\|rv:\[.*?\]\|\|/s, '')
     .trim();
   // Auto-badge: New if added in the last 7 days
   let badge = 'New';
@@ -73,8 +128,8 @@ function adminRowToStoreProduct(row) {
     category:    catId,
     price:       price,
     oldPrice:    null,
-    rating:      rating,
-    reviews:     0,
+    rating:      computedRating,
+    reviews:     reviewsArr,
     badge:       badge,
     featured:    qty > 10,
     colors:      colors.length ? colors : [],
@@ -128,11 +183,23 @@ async function loadAdminInventory() {
     const rows = await res.json();
     window._storeLoading = false;
 
+    /* Cache locally so cross-tab sync works */
+    localStorage.setItem(SHARED_INV_KEY, JSON.stringify(rows));
+
     mergeAdminProducts(rows);
     rebuildAll();
     if (rows.length > 0) showAdminBanner(rows.length);
   } catch (e) {
     window._storeLoading = false;
+    /* Fallback: use local cache if Supabase is unreachable */
+    const cached = localStorage.getItem(SHARED_INV_KEY);
+    if (cached) {
+      try {
+        const rows = JSON.parse(cached);
+        mergeAdminProducts(rows);
+        rebuildAll();
+      } catch (_) {}
+    }
     console.warn('[Finexy] Could not reach admin inventory:', e.message);
   }
 }
@@ -383,6 +450,20 @@ function _refreshOpenProductDetail(p) {
   }
 }
 
+/* ─── CROSS-TAB LIVE SYNC ───────────────────────── */
+/* When admin adds/edits/restocks products in another tab,
+   this event fires and the store updates immediately */
+window.addEventListener('storage', e => {
+  if (e.key === SHARED_INV_KEY && e.newValue) {
+    try {
+      const rows = JSON.parse(e.newValue);
+      mergeAdminProducts(rows);
+      rebuildAll();
+      showToast('🔄 Store updated with latest products!', 2500);
+    } catch (_) {}
+  }
+});
+
 /* ─── REBUILD ALL SECTIONS (called after merge) ─── */
 function rebuildAll() {
   buildHeroGrid();
@@ -402,9 +483,14 @@ function updateCategoryStats() {
   const totalProds = products.length;
 
   // Avg rating — only products that have ratings > 0
-  const rated   = products.filter(p => p.rating > 0);
+  const rated   = products.filter(p => p.rating > 0 || (Array.isArray(p.reviews) && p.reviews.length > 0));
   const avgRating = rated.length
-    ? (rated.reduce((s, p) => s + p.rating, 0) / rated.length).toFixed(1)
+    ? (rated.reduce((s, p) => {
+        const rv = Array.isArray(p.reviews) && p.reviews.length
+          ? p.reviews.reduce((a, r) => a + r.stars, 0) / p.reviews.length
+          : p.rating;
+        return s + rv;
+      }, 0) / rated.length).toFixed(1)
     : null;
 
   // Active categories (those that have at least 1 in-stock product)
@@ -443,7 +529,7 @@ function showAdminBanner(count) {
 }
 
 /* ─── STATE ─────────────────────────────────────── */
-let cart     = [];          /* populated async from Supabase after login */
+let cart     = JSON.parse(localStorage.getItem('cp_cart') || '[]');
 let prevPage = 'home';
 let toastTimer = null;
 let isTransitioning = false;
@@ -465,6 +551,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Start Supabase Realtime WebSocket — live stock sync across all browsers */
   startRealtimeStockSync();
+
+  /* Start the discount countdown ticker */
+  startStorefrontDiscountTicker();
 
   window.addEventListener('scroll', scrollHandler);
 
@@ -587,8 +676,30 @@ function productCard(p) {
   const disc       = p.oldPrice ? Math.round((1 - p.price / p.oldPrice) * 100) : 0;
   const outOfStock = p._outOfStock;
   const lowStock   = p._lowStock;
-  const badgeLabel = outOfStock ? 'Out of Stock' : lowStock ? `Only ${p.qty} left` : p.badge || (disc ? `-${disc}%` : null);
-  const badgeClass = outOfStock ? 'pc-badge out-of-stock-badge' : lowStock ? 'pc-badge low-stock-badge' : 'pc-badge';
+
+  /* ── Discount from admin panel ── */
+  const adminDisc   = p.sku ? getStorefrontDiscount(p.sku) : null;
+  const hasDisc     = adminDisc !== null;
+  const salePrice   = hasDisc ? p.price * (1 - adminDisc.pct / 100) : p.price;
+  const displayPrice= hasDisc ? salePrice : p.price;
+
+  /* Badge */
+  const badgeLabel = outOfStock ? 'Out of Stock'
+    : lowStock  ? `Only ${p.qty} left`
+    : hasDisc   ? `${adminDisc.pct}% OFF`
+    : p.badge   || (disc ? `-${disc}%` : null);
+  const badgeClass = outOfStock ? 'pc-badge out-of-stock-badge'
+    : lowStock  ? 'pc-badge low-stock-badge'
+    : hasDisc   ? `pc-badge${adminDisc.pct === 50 ? ' featured-badge' : ''}`
+    : 'pc-badge';
+
+  /* Reviews */
+  const reviewsArr  = Array.isArray(p.reviews) ? p.reviews : [];
+  const reviewCount = reviewsArr.length;
+  const avgRating   = reviewCount > 0
+    ? (reviewsArr.reduce((s, rv) => s + rv.stars, 0) / reviewCount)
+    : (p.rating || 0);
+
   return `
     <div class="product-card${outOfStock ? '' : ''}"
       onclick="${outOfStock ? "showToast('⚠️ This item is out of stock')" : `openProduct('${p.id}')`}"
@@ -597,7 +708,7 @@ function productCard(p) {
         ${p.image
           ? `<img src="${p.image}" alt="${p.name}" loading="lazy"/>`
           : `<div class="pc-emoji">${p.emoji}</div>`}
-        ${badgeLabel ? `<span class="${badgeCss(p)}">${badgeLabel}</span>` : ''}
+        ${badgeLabel ? `<span class="${badgeClass}">${badgeLabel}</span>` : ''}
         ${!outOfStock ? `<button class="pc-wishlist" onclick="event.stopPropagation()" title="Save">♡</button>` : ''}
         ${outOfStock ? `<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(14,12,9,.55);border-radius:inherit;"><span style="font-size:1.5rem;">🚫</span><span style="color:#fff;font-size:.78rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;">Out of Stock</span></div>` : ''}
         ${lowStock && !outOfStock ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(217,119,6,.92);color:#fff;font-size:.68rem;font-weight:800;text-align:center;padding:6px 8px;text-transform:uppercase;letter-spacing:.06em;">⚡ Only ${p.qty} left</div>` : ''}
@@ -605,16 +716,21 @@ function productCard(p) {
       <div class="pc-body">
         <p class="pc-cat">${catName(p.category)}</p>
         <h4 class="pc-name">${p.name}</h4>
-        ${p.rating > 0 ? `<div class="pc-rating"><span class="pc-stars">${starHTML(p.rating)}</span><span>${p.rating} (${p.reviews||0})</span></div>` : ''}
+        ${avgRating > 0 ? `<div class="pc-rating"><span class="pc-stars">${starHTML(avgRating)}</span><span>${avgRating.toFixed(1)} (${reviewCount} review${reviewCount !== 1 ? 's' : ''})</span></div>` : ''}
         <div class="pc-price-row">
           <div>
-            <span class="pc-price" style="${outOfStock ? 'color:var(--t3);text-decoration:line-through;' : ''}">₦${fmt(p.price)}</span>
-            ${p.oldPrice ? `<span class="pc-old">₦${fmt(p.oldPrice)}</span>` : ''}
+            ${hasDisc
+              ? `<span class="pc-price" style="color:var(--brand);">₦${fmt(salePrice)}</span>
+                 <span class="pc-old" style="text-decoration:line-through;color:var(--t3);font-size:.8rem;margin-left:5px;">₦${fmt(p.price)}</span>`
+              : `<span class="pc-price" style="${outOfStock ? 'color:var(--t3);text-decoration:line-through;' : ''}">₦${fmt(p.price)}</span>
+                 ${p.oldPrice ? `<span class="pc-old">₦${fmt(p.oldPrice)}</span>` : ''}`
+            }
           </div>
           <button class="pc-add"
             onclick="event.stopPropagation();quickAdd('${p.id}')"
             ${outOfStock ? 'disabled' : ''}>+</button>
         </div>
+        ${hasDisc ? `<div data-disc-expires="${adminDisc.expiresAt}" style="font-size:.68rem;font-weight:700;color:#F59E0B;margin-top:4px;">⏱ ${fmtDiscCountdown(adminDisc.expiresAt)}</div>` : ''}
       </div>
     </div>`;
 }
@@ -841,7 +957,63 @@ function openProduct(id) {
   if (!p) return;
   if (p._outOfStock) { showToast('⚠️ This product is currently out of stock.'); return; }
   prevPage = document.querySelector('.page.active')?.id?.replace('page-', '') || 'products';
-  const disc = p.oldPrice ? Math.round((1 - p.price / p.oldPrice) * 100) : 0;
+
+  /* ── Discount ── */
+  const adminDisc = p.sku ? getStorefrontDiscount(p.sku) : null;
+  const hasDisc   = adminDisc !== null;
+  const salePrice = hasDisc ? p.price * (1 - adminDisc.pct / 100) : p.price;
+  const disc      = p.oldPrice ? Math.round((1 - p.price / p.oldPrice) * 100)
+                  : hasDisc   ? adminDisc.pct : 0;
+
+  /* ── Reviews ── */
+  const reviewsArr  = Array.isArray(p.reviews) ? p.reviews : [];
+  const reviewCount = reviewsArr.length;
+  const avgRating   = reviewCount > 0
+    ? (reviewsArr.reduce((s, rv) => s + rv.stars, 0) / reviewCount).toFixed(1)
+    : (p.rating || 0).toFixed(1);
+  const showRating  = parseFloat(avgRating) > 0;
+
+  /* ── Reviews HTML ── */
+  function reviewStarsHTML(n) {
+    let s = '';
+    for (let i = 1; i <= 5; i++)
+      s += `<span style="color:${i<=n?'#F59E0B':'var(--t3)'};font-size:.88rem;">★</span>`;
+    return s;
+  }
+  const reviewsSection = `
+    <div style="margin-top:36px;border-top:1px solid var(--border);padding-top:24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+        <h4 style="font-family:'Syne',sans-serif;font-size:1rem;font-weight:800;color:var(--t1);margin:0;">
+          ⭐ Customer Reviews
+          ${reviewCount > 0 ? `<span style="font-weight:400;font-size:.82rem;color:var(--t2);margin-left:4px;">(${reviewCount})</span>` : ''}
+        </h4>
+        ${showRating && reviewCount > 0
+          ? `<div style="display:flex;align-items:center;gap:5px;">
+               ${reviewStarsHTML(parseFloat(avgRating))}
+               <span style="font-size:.84rem;font-weight:700;color:var(--t2);margin-left:4px;">${avgRating} / 5</span>
+             </div>` : ''}
+      </div>
+      ${reviewCount === 0
+        ? `<p style="font-size:.82rem;color:var(--t3);text-align:center;padding:16px 0;">No reviews yet — be the first to share your experience.</p>`
+        : reviewsArr.map(rv => `
+            <div style="border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;background:var(--surface);">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <div style="width:32px;height:32px;border-radius:50%;background:var(--brand);display:grid;place-items:center;font-size:.78rem;font-weight:800;color:#fff;flex-shrink:0;">
+                    ${(rv.author||'A').charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style="font-size:.84rem;font-weight:700;color:var(--t1);">${rv.author || 'Anonymous'}</div>
+                    <div style="font-size:.68rem;color:var(--t3);">${rv.date || ''}</div>
+                  </div>
+                </div>
+                <div style="display:flex;gap:2px;">${reviewStarsHTML(rv.stars)}</div>
+              </div>
+              <p style="font-size:.84rem;color:var(--t2);line-height:1.6;margin:0;">${rv.text || ''}</p>
+            </div>`).join('')
+      }
+    </div>`;
+
   document.getElementById('productDetail').innerHTML = `
     <div class="pd-layout">
       <div class="pd-image" id="pdMainImage_${id}">
@@ -850,17 +1022,28 @@ function openProduct(id) {
           : `<div class="pd-emoji" id="pdMainImg_${id}">${p.emoji}</div>`}
         <div id="pdColorOverlay_${id}" style="display:none;position:absolute;inset:0;border-radius:inherit;pointer-events:none;transition:opacity .3s;"></div>
         <div id="pdColorBadge_${id}" style="display:none;position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;font-size:.74rem;font-weight:700;padding:5px 14px;border-radius:20px;backdrop-filter:blur(4px);white-space:nowrap;pointer-events:none;"></div>
-        ${disc ? `<span class="pc-badge" style="background:var(--accent)">-${disc}%</span>` : ''}
+        ${disc ? `<span class="pc-badge" style="background:${hasDisc && adminDisc.pct===50?'#EF4444':'var(--accent)'}">${disc}% OFF</span>` : ''}
       </div>
       <div>
         <p class="pd-cat">${catName(p.category)}</p>
         <h2 class="pd-name">${p.name}</h2>
-        ${p.rating > 0 ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;"><span style="color:var(--brand);font-size:.9rem;">${starHTML(p.rating)}</span><span style="font-size:.82rem;color:var(--t2);font-weight:600;">${p.rating} (${p.reviews||0} reviews)</span></div>` : ''}
+        ${showRating ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+          <span style="color:var(--brand);font-size:.9rem;">${starHTML(parseFloat(avgRating))}</span>
+          <span style="font-size:.82rem;color:var(--t2);font-weight:600;">${avgRating} (${reviewCount} review${reviewCount !== 1 ? 's' : ''})</span>
+        </div>` : ''}
         <div class="pd-price-row">
-          <span class="pd-price">₦${fmt(p.price)}</span>
-          ${p.oldPrice ? `<span class="pd-old">₦${fmt(p.oldPrice)}</span>` : ''}
-          ${disc ? `<span style="background:rgba(201,168,76,.12);color:var(--brand);font-size:.75rem;font-weight:800;padding:4px 10px;border-radius:100px;letter-spacing:.06em;text-transform:uppercase;">Save ₦${fmt(p.oldPrice - p.price)}</span>` : ''}
+          ${hasDisc
+            ? `<div style="display:flex;flex-direction:column;gap:2px;">
+                 <span style="font-size:.82rem;color:var(--t3);text-decoration:line-through;">Instead of ₦${fmt(p.price)}</span>
+                 <span class="pd-price" style="color:#22C55E;font-size:1.4rem;">Get it at ₦${fmt(salePrice)}</span>
+                 <span style="font-size:.76rem;color:#86EFAC;font-weight:700;">You save ₦${fmt(p.price - salePrice)} (${adminDisc.pct}% OFF)</span>
+               </div>`
+            : `<span class="pd-price">₦${fmt(p.price)}</span>
+               ${p.oldPrice ? `<span class="pd-old">₦${fmt(p.oldPrice)}</span>` : ''}
+               ${disc && !hasDisc ? `<span style="background:rgba(201,168,76,.12);color:var(--brand);font-size:.75rem;font-weight:800;padding:4px 10px;border-radius:100px;letter-spacing:.06em;text-transform:uppercase;">Save ₦${fmt(p.oldPrice - p.price)}</span>` : ''}`
+          }
         </div>
+        ${hasDisc ? `<div data-disc-expires="${adminDisc.expiresAt}" style="font-size:.74rem;font-weight:700;color:#F59E0B;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:6px 12px;display:inline-block;margin-bottom:16px;margin-top:4px;">⏱ ${fmtDiscCountdown(adminDisc.expiresAt)}</div>` : ''}
         <p data-stock-pill style="font-size:.8rem;font-weight:700;margin-bottom:22px;padding:8px 14px;border-radius:10px;display:inline-block;
           ${p._outOfStock ? 'background:rgba(239,68,68,.1);color:#EF4444;' : p._lowStock ? 'background:rgba(217,119,6,.1);color:#D97706;' : 'background:rgba(5,150,105,.1);color:#059669;'}">
           ${p._outOfStock ? '🚫 Out of Stock' : p._lowStock ? `⚡ Low Stock — only ${p.qty} left` : `✓ In Stock (${p.qty} available)`}
@@ -906,6 +1089,7 @@ function openProduct(id) {
           <span style="font-size:.78rem;color:var(--t3);display:flex;align-items:center;gap:6px;">↩️ 30-day returns</span>
           <span style="font-size:.78rem;color:var(--t3);display:flex;align-items:center;gap:6px;">🔒 Secure checkout</span>
         </div>
+        ${reviewsSection}
       </div>
     </div>
 
@@ -921,6 +1105,8 @@ function openProduct(id) {
   const detailPage = document.getElementById('page-detail');
   if (detailPage) detailPage.dataset.openProductId = String(id);
   showPage('detail');
+  /* Start/restart the discount countdown ticker for this page */
+  startStorefrontDiscountTicker();
 }
 
 function selectColor(btn, id) {
@@ -1015,9 +1201,12 @@ function addToCart(pid, size, color) {
   const selectedColor = color || '';
   const selectedSize  = size  || '';
   const key = `${pid}-${selectedSize}-${selectedColor}`;
+  /* Use discounted price if an active admin discount exists */
+  const activeDisc  = p.sku ? getStorefrontDiscount(p.sku) : null;
+  const cartPrice   = activeDisc ? p.price * (1 - activeDisc.pct / 100) : p.price;
   const ex  = cart.find(i => i.key === key);
   if (ex) ex.qty += 1;
-  else cart.push({ key, id: pid, sku: p.sku || null, name: p.name, price: p.price, emoji: p.emoji || '🎁', image: p.image || null, size: selectedSize, color: selectedColor, qty: 1 });
+  else cart.push({ key, id: pid, sku: p.sku || null, name: p.name, price: cartPrice, originalPrice: p.price, discountPct: activeDisc ? activeDisc.pct : 0, emoji: p.emoji || '🎁', image: p.image || null, size: selectedSize, color: selectedColor, qty: 1 });
   saveCart(); syncCart();
 
   if (p._lowStock) {
@@ -1036,50 +1225,7 @@ function changeCartQty(key, delta) {
   item.qty = Math.max(1, item.qty + delta);
   saveCart(); syncCart();
 }
-/* ─── CART PERSISTENCE (Supabase) ───────────────── */
-async function saveCart() {
-  if (!STORE_USER) return;               /* guests: cart is in-memory only */
-  try {
-    const userId = STORE_USER.id;
-    /* Upsert into store_carts — one row per user */
-    await fetch(`${SUPA_URL}/rest/v1/${CART_TABLE}?user_id=eq.${userId}`, {
-      method: 'DELETE',
-      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY },
-    });
-    if (cart.length > 0) {
-      await fetch(`${SUPA_URL}/rest/v1/${CART_TABLE}`, {
-        method: 'POST',
-        headers: {
-          'apikey':       SUPA_KEY,
-          'Authorization':'Bearer ' + SUPA_KEY,
-          'Content-Type': 'application/json',
-          'Prefer':       'return=minimal',
-        },
-        body: JSON.stringify({ user_id: userId, items: JSON.stringify(cart), updated_at: new Date().toISOString() }),
-      });
-    }
-  } catch(e) {
-    console.warn('[Finexy] Cart save failed:', e.message);
-  }
-}
-
-async function loadCart() {
-  if (!STORE_USER) { cart = []; syncCart(); return; }
-  try {
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/${CART_TABLE}?user_id=eq.${STORE_USER.id}&select=items&limit=1`,
-      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
-    );
-    if (res.ok) {
-      const rows = await res.json();
-      cart = rows.length && rows[0].items ? JSON.parse(rows[0].items) : [];
-    }
-  } catch(e) {
-    cart = [];
-    console.warn('[Finexy] Cart load failed:', e.message);
-  }
-  syncCart();
-}
+function saveCart() { localStorage.setItem('cp_cart', JSON.stringify(cart)); }
 function syncCart() {
   const count = cart.reduce((s, i) => s + i.qty, 0);
   const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
@@ -1110,6 +1256,7 @@ function syncCart() {
             ${i.color ? `<span style="display:inline-flex;align-items:center;gap:3px;padding:1px 8px 1px 5px;border-radius:10px;background:#F3F4F6;font-size:.68rem;font-weight:700;color:#374151;">
               <span style="width:10px;height:10px;border-radius:50%;background:${i.color};border:1px solid rgba(0,0,0,.15);display:inline-block;flex-shrink:0;"></span>${i.color}
             </span>` : ''}
+            ${i.discountPct ? `<span style="padding:1px 8px;border-radius:10px;background:rgba(34,197,94,.1);color:#16a34a;font-size:.68rem;font-weight:800;">🏷️ ${i.discountPct}% OFF</span>` : ''}
           </small>
           <div class="ci-qty">
             <button onclick="changeCartQty('${i.key}',-1)">−</button>
@@ -1277,7 +1424,13 @@ function stepTwoHTML() {
         <div style="width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,#1a1a2e,#16213e);display:grid;place-items:center;font-size:1.3rem;flex-shrink:0;">💳</div>
         <div style="flex:1;">
           <p style="font-weight:800;color:#111;margin:0;font-size:.88rem;">Card Payment</p>
-          <small style="color:#6B7280;font-size:.74rem;">Pay securely with your debit or credit card</small>
+          <small style="color:#6B7280;font-size:.74rem;">Visa · Mastercard · Verve · any bank card accepted</small>
+          <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">
+            <span style="font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:5px;background:#1A1F71;color:#fff;letter-spacing:.04em;">VISA</span>
+            <span style="font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:5px;background:#EB001B;color:#fff;letter-spacing:.04em;">MC</span>
+            <span style="font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:5px;background:#006C35;color:#fff;letter-spacing:.04em;">VERVE</span>
+            <span style="font-size:.62rem;font-weight:800;padding:2px 7px;border-radius:5px;background:#FF6B00;color:#fff;letter-spacing:.04em;">AMEX</span>
+          </div>
         </div>
         <div id="payCheck_card" style="width:22px;height:22px;border-radius:50%;background:#E5E7EB;flex-shrink:0;transition:background .2s;"></div>
       </label>
@@ -1338,7 +1491,8 @@ function stepTwoHTML() {
 }
 
 function stepThreeHTML(details, payMethod) {
-  const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const total    = cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const delivery = calcDeliveryDate(details.state || '');
   return `
     <div style="text-align:center;padding:8px 0 16px;">
       <div style="font-size:2.5rem;margin-bottom:8px;">📦</div>
@@ -1352,6 +1506,12 @@ function stepThreeHTML(details, payMethod) {
       <p style="font-size:.82rem;color:#6B7280;margin:0 0 2px;">${details.phone} · ${details.email}</p>
       <p style="font-size:.82rem;color:#6B7280;margin:0;">${details.address}, ${details.city}, ${details.state}</p>
       ${details.notes ? `<p style="font-size:.78rem;color:#9CA3AF;margin:6px 0 0;font-style:italic;">${details.notes}</p>` : ''}
+    </div>
+
+    <div style="background:linear-gradient(135deg,#0f0c29,#302b63);border-radius:12px;padding:16px;margin-bottom:12px;">
+      <p style="font-size:.72rem;font-weight:800;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.1em;margin:0 0 8px;">🚚 Estimated Delivery</p>
+      <p style="font-size:.95rem;font-weight:800;color:#C9A84C;margin:0 0 3px;">${delivery.label}</p>
+      <p style="font-size:.75rem;color:rgba(255,255,255,.5);margin:0;">~${delivery.days} business day${delivery.days > 1 ? 's' : ''} to ${details.state}</p>
     </div>
 
     <div style="background:#F9FAFB;border-radius:12px;padding:16px;margin-bottom:12px;">
@@ -1459,7 +1619,7 @@ function checkoutNext() {
     _coStep = 3;
     renderStep();
   } else if (_coStep === 3) {
-    placeOrder();
+    placeOrder(); // async — intentionally not awaited here; placeOrder manages its own UI state
   }
 }
 
@@ -1526,10 +1686,98 @@ function showCheckoutError(msg) {
 }
 
 function closeCheckoutModal() {
-  const m = document.getElementById('checkoutModal');
-  if (m) m.remove();
+  /* Remove every checkout modal in case multiple got stacked */
+  document.querySelectorAll('#checkoutModal').forEach(m => m.remove());
+  /* Also remove any lingering body scroll-lock */
+  document.body.style.overflow = '';
   _coStep = 1; _coDetails = {}; _coPayMethod = 'Pay on Delivery';
 }
+
+/* ── Delivery date calculator ──────────────────────────────────────
+   Lagos = 2 days, nearby states = 3, mid-belt = 4-5, far north = 6-7
+─────────────────────────────────────────────────────────────────── */
+const DELIVERY_DAYS = {
+  'Lagos': 2,
+  'Ogun': 3, 'Oyo': 3, 'Osun': 3, 'Ekiti': 3, 'Ondo': 3,
+  'Edo': 3, 'Delta': 3, 'Rivers': 4, 'Anambra': 4, 'Imo': 4,
+  'Abia': 4, 'Enugu': 4, 'Ebonyi': 4, 'Cross River': 4,
+  'Akwa Ibom': 4, 'Bayelsa': 5, 'Kwara': 4, 'Kogi': 4,
+  'Benue': 5, 'Plateau': 5, 'Nasarawa': 5, 'Niger': 5,
+  'FCT - Abuja': 5, 'Kaduna': 6, 'Kano': 6, 'Katsina': 7,
+  'Jigawa': 7, 'Sokoto': 7, 'Kebbi': 7, 'Zamfara': 7,
+  'Gombe': 6, 'Bauchi': 6, 'Yobe': 7, 'Borno': 7,
+  'Adamawa': 6, 'Taraba': 6,
+};
+function getDeliveryDays(state) {
+  return DELIVERY_DAYS[state] || 5;
+}
+function calcDeliveryDate(state) {
+  const days = getDeliveryDays(state);
+  const d = new Date();
+  // Skip Sundays
+  let added = 0;
+  while (added < days) {
+    d.setDate(d.getDate() + 1);
+    if (d.getDay() !== 0) added++; // 0 = Sunday
+  }
+  return {
+    date: d.toISOString().slice(0, 10),
+    label: d.toLocaleDateString('en-NG', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
+    days,
+  };
+}
+
+/* ── Auto-mark orders as delivered after delivery window ──────── */
+function scheduleAutoDelivery(orderId, deliveryDateStr) {
+  const deliveryTime = new Date(deliveryDateStr + 'T18:00:00').getTime();
+  const now = Date.now();
+  const delay = deliveryTime - now;
+  if (delay <= 0) {
+    // Already past — update immediately
+    markOrderDelivered(orderId);
+    return;
+  }
+  /* Store pending deliveries in localStorage so they survive page refresh */
+  const pending = JSON.parse(localStorage.getItem('finexy_pending_deliveries') || '{}');
+  pending[orderId] = { deliveryTime, deliveryDate: deliveryDateStr };
+  localStorage.setItem('finexy_pending_deliveries', JSON.stringify(pending));
+
+  setTimeout(() => markOrderDelivered(orderId), delay);
+}
+
+async function markOrderDelivered(orderId) {
+  /* Remove from pending */
+  const pending = JSON.parse(localStorage.getItem('finexy_pending_deliveries') || '{}');
+  delete pending[orderId];
+  localStorage.setItem('finexy_pending_deliveries', JSON.stringify(pending));
+
+  try {
+    await fetch(`${SUPA_URL}/rest/v1/orders?order_id=eq.${encodeURIComponent(orderId)}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY,
+        'Content-Type': 'application/json', 'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ status: 'delivered', delivered_at: new Date().toISOString() }),
+    });
+    showToast(`🎉 Order #${orderId} has been delivered!`, 5000);
+  } catch(_) {}
+}
+
+/* On every page load, resume any timers for pending deliveries */
+(function resumePendingDeliveries() {
+  try {
+    const pending = JSON.parse(localStorage.getItem('finexy_pending_deliveries') || '{}');
+    Object.entries(pending).forEach(([orderId, { deliveryTime }]) => {
+      const delay = deliveryTime - Date.now();
+      if (delay <= 0) {
+        markOrderDelivered(orderId);
+      } else {
+        setTimeout(() => markOrderDelivered(orderId), delay);
+      }
+    });
+  } catch(_) {}
+})();
 
 async function placeOrder() {
   const btn = document.getElementById('coBtnNext');
@@ -1554,6 +1802,7 @@ async function placeOrder() {
   const itemCount = cart.reduce((s, i) => s + i.qty, 0);
   const orderId   = 'ORD-' + Date.now().toString().slice(-8);
   const today     = new Date().toISOString().slice(0, 10);
+  const delivery  = calcDeliveryDate(_coDetails.state);
 
   const itemsSummary = cart.map(i => {
     let variant = [];
@@ -1564,24 +1813,49 @@ async function placeOrder() {
   }).join(', ');
 
   const orderPayload = {
-    order_id:       orderId,
-    date:           today,
-    customer:       `${_coDetails.first} ${_coDetails.last}`,
-    phone:          _coDetails.phone,
-    email:          _coDetails.email,
-    address:        `${_coDetails.address}, ${_coDetails.city}, ${_coDetails.state}`,
-    notes:          _coDetails.notes || '',
-    items_summary:  itemsSummary,
-    items_count:    itemCount,
-    total:          total,
-    payment_method: _coPayMethod,
-    status:         'pending',
-    customer_id:    STORE_USER ? (STORE_USER.id || null) : null,
-    created_at:     new Date().toISOString(),
+    order_id:           orderId,
+    date:               today,
+    customer:           `${_coDetails.first} ${_coDetails.last}`,
+    phone:              _coDetails.phone,
+    email:              _coDetails.email,
+    address:            `${_coDetails.address}, ${_coDetails.city}, ${_coDetails.state}`,
+    notes:              _coDetails.notes || '',
+    items_summary:      itemsSummary,
+    items_count:        itemCount,
+    total:              total,
+    payment_method:     _coPayMethod,
+    status:             'pending',
+    delivery_date:      delivery.date,
+    estimated_days:     delivery.days,
+    customer_id:        STORE_USER ? (STORE_USER.id || null) : null,
+    created_at:         new Date().toISOString(),
   };
 
-  /* ── Try to save to Supabase — but NEVER fail the order because of it ── */
+  /* ── Save to Supabase ── */
+  /* Core payload — only columns that definitely exist in every Finexy orders table */
+  const corePayload = {
+    order_id:       orderPayload.order_id,
+    date:           orderPayload.date,
+    customer:       orderPayload.customer,
+    phone:          orderPayload.phone,
+    email:          orderPayload.email,
+    address:        orderPayload.address,
+    notes:          orderPayload.notes,
+    items_summary:  orderPayload.items_summary,
+    items_count:    orderPayload.items_count,
+    total:          orderPayload.total,
+    payment_method: orderPayload.payment_method,
+    status:         orderPayload.status,
+    customer_id:    orderPayload.customer_id,
+    created_at:     orderPayload.created_at,
+  };
+
+  /* Extended payload — includes new columns (delivery_date, estimated_days) */
+  const fullPayload = { ...corePayload, delivery_date: orderPayload.delivery_date, estimated_days: orderPayload.estimated_days };
+
+  let savedOk = false;
   try {
+    /* Try full payload first */
     const res = await fetch(SUPA_URL + '/rest/v1/orders', {
       method: 'POST',
       headers: {
@@ -1590,12 +1864,38 @@ async function placeOrder() {
         'Content-Type':  'application/json',
         'Prefer':        'return=representation',
       },
-      body: JSON.stringify(orderPayload),
+      body: JSON.stringify(fullPayload),
     });
-    /* Silently log if Supabase fails — order still proceeds */
-    if (!res.ok) console.warn('[Finexy] Order save to Supabase failed (non-critical):', await res.text());
+    if (res.ok) {
+      savedOk = true;
+      console.log('[Finexy] ✅ Order saved to Supabase:', orderId);
+    } else {
+      const errText = await res.text();
+      console.warn('[Finexy] Full payload failed, trying core payload. Error:', errText);
+
+      /* Retry with core-only columns (in case delivery_date/estimated_days cols don't exist yet) */
+      const res2 = await fetch(SUPA_URL + '/rest/v1/orders', {
+        method: 'POST',
+        headers: {
+          'apikey':        SUPA_KEY,
+          'Authorization': 'Bearer ' + SUPA_KEY,
+          'Content-Type':  'application/json',
+          'Prefer':        'return=representation',
+        },
+        body: JSON.stringify(corePayload),
+      });
+      if (res2.ok) {
+        savedOk = true;
+        console.log('[Finexy] ✅ Order saved (core columns only):', orderId);
+        console.warn('[Finexy] Add delivery_date (text) and estimated_days (int) columns to your Supabase orders table for full functionality.');
+      } else {
+        const err2 = await res2.text();
+        console.error('[Finexy] ❌ Order failed to save to Supabase. Full error:', err2);
+        console.error('[Finexy] Check: 1) orders table exists 2) RLS policy allows insert 3) columns match payload');
+      }
+    }
   } catch(e) {
-    console.warn('[Finexy] Supabase unreachable — order recorded locally only.', e.message);
+    console.error('[Finexy] ❌ Network error saving order:', e.message);
   }
 
   /* ── Deduct stock (best-effort, non-blocking) ── */
@@ -1620,14 +1920,15 @@ async function placeOrder() {
     await Promise.all(deductPromises);
   } catch(_) {}
 
-  /* ── Always succeed: rebuild UI, clear cart, show success ── */
-  rebuildAll();
-  closeCheckoutModal();
+  /* ── Always succeed: clear cart first, close modal, rebuild, show success ── */
   cart = []; saveCart(); syncCart();
-  showOrderSuccess(orderId, total, _coPayMethod);
+  closeCheckoutModal();
+  rebuildAll();
+  scheduleAutoDelivery(orderId, delivery.date);
+  showOrderSuccess(orderId, total, _coPayMethod, delivery);
 }
 
-function showOrderSuccess(orderId, total, payMethod) {
+function showOrderSuccess(orderId, total, payMethod, delivery) {
   const modal = document.createElement('div');
   modal.id = 'orderSuccessModal';
   modal.style.cssText = [
@@ -1637,34 +1938,74 @@ function showOrderSuccess(orderId, total, payMethod) {
     'padding:16px',
   ].join(';');
 
-  const payNote = payMethod === 'Pay on Delivery'
+  const isPOD      = payMethod === 'Pay on Delivery';
+  const isTransfer = payMethod === 'Bank Transfer';
+  const isCard     = payMethod === 'Card Payment';
+
+  const payNote = isPOD
     ? '💵 Pay cash when your order arrives at your door. No advance payment needed.'
-    : payMethod === 'Bank Transfer'
+    : isTransfer
     ? '🏦 Please transfer payment before delivery. Our team will contact you with bank details shortly.'
     : '💳 Your card payment has been processed securely. You will receive a confirmation email shortly.';
 
-  modal.innerHTML = `
-    <div style="background:#fff;border-radius:22px;max-width:440px;width:100%;padding:40px 32px;text-align:center;animation:coSlide .35s cubic-bezier(.16,1,.3,1)">
-      <div style="width:74px;height:74px;background:linear-gradient(135deg,#C9A84C,#8A6F30);border-radius:50%;display:grid;place-items:center;margin:0 auto 20px;font-size:2rem;color:#fff;">✓</div>
-      <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#111;margin:0 0 8px">Order Placed! 🎉</h2>
-      <p style="color:#6B7280;font-size:.85rem;margin:0 0 22px">Your order <strong style="color:#C9A84C">#${orderId}</strong> has been received.</p>
+  const payStatusBadge = isPOD
+    ? `<span style="display:inline-block;padding:3px 10px;border-radius:20px;background:#FEF3C7;color:#92400E;font-size:.7rem;font-weight:800;">⏳ Pay on Delivery</span>`
+    : isTransfer
+    ? `<span style="display:inline-block;padding:3px 10px;border-radius:20px;background:#DBEAFE;color:#1E40AF;font-size:.7rem;font-weight:800;">🏦 Awaiting Transfer</span>`
+    : `<span style="display:inline-block;padding:3px 10px;border-radius:20px;background:#D1FAE5;color:#065F46;font-size:.7rem;font-weight:800;">✅ Payment Received</span>`;
 
-      <div style="background:#F9FAFB;border-radius:14px;padding:18px;margin-bottom:18px;text-align:left;">
-        <div style="display:flex;justify-content:space-between;margin-bottom:9px;">
-          <span style="font-size:.78rem;color:#6B7280;font-weight:600;">Order ID</span>
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:22px;max-width:460px;width:100%;padding:36px 30px;text-align:center;animation:coSlide .35s cubic-bezier(.16,1,.3,1);overflow-y:auto;max-height:92vh;">
+      <div style="width:74px;height:74px;background:linear-gradient(135deg,#C9A84C,#8A6F30);border-radius:50%;display:grid;place-items:center;margin:0 auto 16px;font-size:2rem;color:#fff;">✓</div>
+      <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#111;margin:0 0 6px">Order Placed! 🎉</h2>
+      <p style="color:#6B7280;font-size:.85rem;margin:0 0 20px">Your order <strong style="color:#C9A84C">#${orderId}</strong> has been received.</p>
+
+      <div style="background:#F9FAFB;border-radius:14px;padding:18px;margin-bottom:14px;text-align:left;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-size:.75rem;color:#6B7280;font-weight:600;">Order ID</span>
           <span style="font-size:.78rem;font-weight:800;color:#111;">#${orderId}</span>
         </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:9px;">
-          <span style="font-size:.78rem;color:#6B7280;font-weight:600;">Total</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-size:.75rem;color:#6B7280;font-weight:600;">Total</span>
           <span style="font-size:.78rem;font-weight:800;color:#C9A84C;">₦${fmt(total)}</span>
         </div>
-        <div style="display:flex;justify-content:space-between;">
-          <span style="font-size:.78rem;color:#6B7280;font-weight:600;">Payment</span>
-          <span style="font-size:.78rem;font-weight:800;color:#111;">${payMethod}</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="font-size:.75rem;color:#6B7280;font-weight:600;">Payment</span>
+          <span>${payStatusBadge}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-top:10px;border-top:1px solid #E5E7EB;">
+          <span style="font-size:.75rem;color:#6B7280;font-weight:600;">Status</span>
+          <span style="display:inline-block;padding:3px 10px;border-radius:20px;background:#FEF3C7;color:#92400E;font-size:.7rem;font-weight:800;">📦 Processing</span>
         </div>
       </div>
 
-      <p style="font-size:.8rem;color:#6B7280;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:12px;margin-bottom:24px;line-height:1.55;">${payNote}</p>
+      <!-- Delivery timeline -->
+      <div style="background:linear-gradient(135deg,#0f0c29,#302b63);border-radius:14px;padding:18px;margin-bottom:14px;text-align:left;">
+        <p style="font-size:.7rem;font-weight:800;color:rgba(255,255,255,.5);letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px;">🚚 Estimated Delivery</p>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:rgba(201,168,76,.2);display:grid;place-items:center;font-size:1.2rem;flex-shrink:0;">📅</div>
+          <div>
+            <p style="font-size:.9rem;font-weight:800;color:#fff;margin:0 0 2px;">${delivery ? delivery.label : 'Within 2–7 business days'}</p>
+            <p style="font-size:.72rem;color:rgba(255,255,255,.5);margin:0;">${delivery ? `Approximately ${delivery.days} business day${delivery.days > 1 ? 's' : ''} from now` : ''}</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:10px;">
+          <div style="flex:1;text-align:center;padding:8px 6px;border-radius:10px;background:rgba(201,168,76,.15);border:1px solid rgba(201,168,76,.3);">
+            <div style="font-size:.65rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Ordered</div>
+            <div style="font-size:.72rem;font-weight:800;color:#C9A84C;margin-top:3px;">Today ✓</div>
+          </div>
+          <div style="flex:1;text-align:center;padding:8px 6px;border-radius:10px;background:rgba(255,255,255,.06);">
+            <div style="font-size:.65rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Dispatched</div>
+            <div style="font-size:.72rem;font-weight:800;color:rgba(255,255,255,.6);margin-top:3px;">In 24h</div>
+          </div>
+          <div style="flex:1;text-align:center;padding:8px 6px;border-radius:10px;background:rgba(255,255,255,.06);">
+            <div style="font-size:.65rem;color:rgba(255,255,255,.5);font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Delivered</div>
+            <div style="font-size:.72rem;font-weight:800;color:rgba(255,255,255,.6);margin-top:3px;">${delivery ? delivery.label.split(',')[0] : '2–7 days'}</div>
+          </div>
+        </div>
+      </div>
+
+      <p style="font-size:.8rem;color:#6B7280;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:12px;margin-bottom:20px;line-height:1.55;text-align:left;">${payNote}</p>
 
       <button onclick="document.getElementById('orderSuccessModal').remove()" style="width:100%;padding:14px;border-radius:12px;border:none;background:linear-gradient(135deg,#1A1612,#C9A84C);color:#fff;font-size:.88rem;font-weight:800;cursor:pointer;font-family:inherit;letter-spacing:.06em;text-transform:uppercase;">Continue Shopping →</button>
     </div>`;
@@ -1726,21 +2067,58 @@ function openBlogPost(id) {
 }
 
 /* ─── CONTACT ────────────────────────────────────── */
-function submitContact(e) {
+async function submitContact(e) {
   e.preventDefault();
-  const btn = e.target.querySelector('button[type=submit]');
-  btn.textContent = 'Sending…'; btn.disabled = true;
-  setTimeout(() => {
-    btn.textContent = 'Send Message ✓';
+  const form = e.target;
+  const btn  = form.querySelector('button[type=submit]');
+
+  /* Read form fields (support multiple common ID patterns) */
+  const name    = (form.querySelector('#contactName,#contact-name,[name=name]')?.value    || '').trim();
+  const email   = (form.querySelector('#contactEmail,#contact-email,[name=email]')?.value  || '').trim();
+  const subject = (form.querySelector('#contactSubject,#contact-subject,[name=subject]')?.value || '').trim();
+  const message = (form.querySelector('#contactMessage,#contact-message,#contactMsg,[name=message]')?.value || '').trim();
+
+  if (!name || !email || !message) {
+    showToast('\u26a0\ufe0f Please fill in all required fields.');
+    return;
+  }
+
+  btn.textContent = 'Sending\u2026'; btn.disabled = true;
+
+  try {
+    const res = await fetch(SUPA_URL + '/rest/v1/contact_messages', {
+      method: 'POST',
+      headers: {
+        'apikey':        SUPA_KEY,
+        'Authorization': 'Bearer ' + SUPA_KEY,
+        'Content-Type':  'application/json',
+        'Prefer':        'return=minimal',
+      },
+      body: JSON.stringify({
+        name, email, subject: subject || '(no subject)', message,
+        status:     'open',
+        created_at: new Date().toISOString(),
+      }),
+    });
+
+    if (!res.ok) throw new Error(await res.text());
+
+    btn.textContent = 'Send Message \u2713';
     document.getElementById('contactSuccess').style.display = 'block';
-    showToast('✅ Message sent! We\'ll respond within 24 hours.');
-    e.target.reset();
+    showToast('\u2705 Message sent! We\'ll respond within 24 hours.');
+    form.reset();
     setTimeout(() => {
       btn.textContent = 'Send Message'; btn.disabled = false;
       document.getElementById('contactSuccess').style.display = 'none';
     }, 5000);
-  }, 1500);
+
+  } catch(err) {
+    console.error('[Finexy] Contact form error:', err.message);
+    btn.textContent = 'Send Message'; btn.disabled = false;
+    showToast('\u274c Could not send message. Please try again.');
+  }
 }
+
 
 /* ─── TOAST ──────────────────────────────────────── */
 function showToast(msg, duration = 3500) {
@@ -1791,88 +2169,26 @@ async function storeApiCall(path, options = {}) {
 // ── Session ──────────────────────────────────────────────────────
 let STORE_USER = null;
 
-/* Generate a simple browser fingerprint to use as session token */
-function _sessionToken() {
-  const raw = navigator.userAgent + screen.width + screen.height + navigator.language;
-  let h = 0;
-  for (let i = 0; i < raw.length; i++) { h = (Math.imul(31, h) + raw.charCodeAt(i)) | 0; }
-  return 'sess_' + Math.abs(h).toString(36) + '_' + Date.now().toString(36);
-}
-
-/* We keep a lightweight session key in sessionStorage (tab-local, cleared on close)
-   so the user stays logged in for the tab's lifetime without hitting Supabase
-   on every action.  The canonical source of truth is the store_sessions table. */
-const _SESSION_KEY = 'finexy_sess_token';
-
-async function loadStoreSession() {
+function loadStoreSession() {
   try {
-    const token = sessionStorage.getItem(_SESSION_KEY);
-    if (!token) return;
-    const res = await fetch(
-      `${SUPA_URL}/rest/v1/${SESSION_TABLE}?token=eq.${encodeURIComponent(token)}&select=user_data&limit=1`,
-      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
-    );
-    if (!res.ok) return;
-    const rows = await res.json();
-    if (rows.length && rows[0].user_data) {
-      STORE_USER = typeof rows[0].user_data === 'string'
-        ? JSON.parse(rows[0].user_data) : rows[0].user_data;
+    const raw = localStorage.getItem('cp_store_session');
+    if (raw) {
+      STORE_USER = JSON.parse(raw);
       updateNavAccount();
-      await loadCart();
     }
-  } catch(e) {
-    console.warn('[Finexy] Session restore failed:', e.message);
-  }
+  } catch(e) {}
 }
 
-async function saveStoreSession(user) {
+function saveStoreSession(user) {
   STORE_USER = user;
+  localStorage.setItem('cp_store_session', JSON.stringify(user));
   updateNavAccount();
-  /* Write session row to Supabase */
-  try {
-    const token = _sessionToken();
-    sessionStorage.setItem(_SESSION_KEY, token);
-    await fetch(`${SUPA_URL}/rest/v1/${SESSION_TABLE}`, {
-      method: 'POST',
-      headers: {
-        'apikey':       SUPA_KEY,
-        'Authorization':'Bearer ' + SUPA_KEY,
-        'Content-Type': 'application/json',
-        'Prefer':       'return=minimal',
-      },
-      body: JSON.stringify({
-        token,
-        user_id:    user.id   || null,
-        user_data:  JSON.stringify(user),
-        created_at: new Date().toISOString(),
-      }),
-    });
-  } catch(e) {
-    console.warn('[Finexy] Session save failed:', e.message);
-  }
-  await loadCart();
 }
 
-async function clearStoreSession() {
-  const token = sessionStorage.getItem(_SESSION_KEY);
-  STORE_USER  = null;
-  sessionStorage.removeItem(_SESSION_KEY);
-  cart = []; syncCart();
+function clearStoreSession() {
+  STORE_USER = null;
+  localStorage.removeItem('cp_store_session');
   updateNavAccount();
-  /* Delete session row from Supabase */
-  if (token) {
-    try {
-      await fetch(
-        `${SUPA_URL}/rest/v1/${SESSION_TABLE}?token=eq.${encodeURIComponent(token)}`,
-        {
-          method: 'DELETE',
-          headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY },
-        }
-      );
-    } catch(e) {
-      console.warn('[Finexy] Session delete failed:', e.message);
-    }
-  }
 }
 
 function updateNavAccount() {
@@ -1988,8 +2304,8 @@ function navigateToOrders() {
   showToast('📦 Order history coming soon!', 3000);
 }
 
-async function storeLogout() {
-  await clearStoreSession();
+function storeLogout() {
+  clearStoreSession();
   document.getElementById('storeUserDropdown').style.display = 'none';
   showToast('👋 You have been signed out.', 3000);
 }
@@ -2011,7 +2327,7 @@ async function doStoreLogin() {
       btn.innerHTML = 'Sign In <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
       btn.disabled = false; return;
     }
-    await saveStoreSession(user);
+    saveStoreSession(user);
     showSaMsg('saLMsg', `Welcome back, ${user.first}! 🎉`, 'success');
     setTimeout(() => { goToDestination(); }, 900);
   } catch(e) {
@@ -2050,7 +2366,7 @@ async function doStoreSignup() {
       body: JSON.stringify({ first, last, email, phone, password: pw, created_at: new Date().toISOString() }),
     });
     const newUser = result[0];
-    await saveStoreSession(newUser);
+    saveStoreSession(newUser);
 
     // Show success state
     document.getElementById('saSignupForm').style.display = 'none';
@@ -2085,5 +2401,5 @@ async function doStoreForgot() {
 
 // ── Init on page load ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  (async () => { await loadStoreSession(); })();
+  loadStoreSession();
 });
