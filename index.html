@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <script>
+    (function(){
+      var t = localStorage.getItem('finexy-theme') || 'light';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Finexy — The Art of Style</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,900;1,400;1,700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Bebas+Neue&display=swap" rel="stylesheet"/>
+  <style>
+    body.theme-transitioning, body.theme-transitioning * { transition-duration: 400ms !important; }
+  </style>
+</head>
+<body>
+
+<!-- TRANSITION OVERLAY -->
+<div id="transitionOverlay"></div>
+
+<!-- CART SIDEBAR -->
+<div id="cartOverlay" class="cart-overlay" onclick="toggleCart()"></div>
+<aside id="cartSidebar" class="cart-sidebar">
+  <div class="cart-header">
+    <h3>Your Cart <span id="cartCount" class="cart-badge">0</span></h3>
+    <button class="cart-close" onclick="toggleCart()">✕</button>
+  </div>
+  <div id="cartItems" class="cart-items">
+    <div class="cart-empty">
+      <svg viewBox="0 0 64 64" fill="none"><circle cx="32" cy="32" r="30" stroke="currentColor" stroke-width="2"/><path d="M20 26h24l-3 14H23L20 26z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M26 26v-4a6 6 0 0 1 12 0v4" stroke="currentColor" stroke-width="2"/></svg>
+      <p>Your cart is empty</p>
+      <span>Discover something beautiful</span>
+    </div>
+  </div>
+  <div class="cart-footer" id="cartFooter" style="display:none">
+    <div class="cart-total">
+      <span>Subtotal</span>
+      <strong id="cartTotal">₦0</strong>
+    </div>
+    <button class="btn-checkout" onclick="checkout()">Checkout →</button>
+  </div>
+</aside>
+
+<!-- TOAST -->
+<div id="toast" class="toast"></div>
+
+<!-- ═══════════════════════════ NAVIGATION ═══════════════════════════ -->
+<header id="navbar" class="navbar">
+  <div class="nav-inner">
+    <!-- Logo -->
+    <a href="#" class="logo" onclick="navClick(document.querySelector('[data-page=home]'),'home');return false">
+      <svg class="logo-icon" viewBox="0 0 38 38"><defs><linearGradient id="lg1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#C9A84C"/><stop offset="100%" stop-color="#8A6F30"/></linearGradient></defs><path d="M19 2L35 11V27L19 36L3 27V11L19 2Z" fill="url(#lg1)"/><path d="M13 19L17 23L25 15" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      FINEXY
+    </a>
+
+    <!-- Desktop nav -->
+    <nav class="nav-links" id="navLinks">
+      <a href="#" class="nav-link active" data-page="home"       onclick="navClick(this,'home');return false">Home</a>
+      <a href="#" class="nav-link"        data-page="categories" onclick="navClick(this,'categories');return false">Categories</a>
+      <a href="#" class="nav-link"        data-page="products"   onclick="navClick(this,'products');return false">Products</a>
+      <a href="#" class="nav-link"        data-page="blog"       onclick="navClick(this,'blog');return false">Journal</a>
+      <a href="#" class="nav-link"        data-page="contact"    onclick="navClick(this,'contact');return false">Contact</a>
+    </nav>
+
+    <!-- Actions -->
+    <div class="nav-actions">
+      <!-- Search -->
+      <div class="search-wrap">
+        <input id="searchInput" type="text" placeholder="Search products…" oninput="liveSearch(this.value)" onkeydown="if(event.key==='Enter')doSearch()"/>
+        <button onclick="doSearch()">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        </button>
+        <div id="searchDropdown" class="search-dropdown"></div>
+      </div>
+
+      <!-- Theme toggle -->
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle dark/light mode">
+        <span class="t-sun">☀️</span>
+        <span class="t-moon">🌙</span>
+      </button>
+
+      <!-- Account -->
+      <div id="navAccountArea">
+        <button class="nav-account-btn" onclick="openStoreAuth('login')" id="navSignInBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Sign In
+        </button>
+        <div id="navUserMenu" style="display:none;position:relative;">
+          <button class="nav-account-btn" onclick="toggleStoreUserMenu()" id="navUserBtn">
+            <div class="nav-account-avatar" id="navUserAvatar">?</div>
+            <span id="navUserName">User</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div id="storeUserDropdown" style="display:none;position:absolute;right:0;top:calc(100%+8px);background:var(--surface);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow-lg);min-width:210px;overflow:hidden;z-index:999;">
+            <div style="padding:18px;border-bottom:1px solid var(--border);">
+              <div style="font-weight:800;font-size:.88rem;color:var(--t1);" id="dropUserName">User</div>
+              <div style="font-size:.74rem;color:var(--t3);" id="dropUserEmail">email@example.com</div>
+            </div>
+            <div style="padding:8px;">
+              <button onclick="navigateToOrders()" style="width:100%;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:none;background:none;font-size:.83rem;font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;color:var(--t1);cursor:pointer;text-align:left;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">📦 Order History</button>
+              <button onclick="storeLogout()" style="width:100%;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:none;background:none;font-size:.83rem;font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;color:#EF4444;cursor:pointer;text-align:left;" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">🚪 Sign Out</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cart -->
+      <button class="cart-btn" onclick="toggleCart()" aria-label="Shopping cart">
+        <svg viewBox="0 0 24 24"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        <div class="cart-dot" id="cartDot" style="display:none"></div>
+      </button>
+
+      <!-- Hamburger -->
+      <button class="hamburger" id="hamburger" onclick="toggleMenu()" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- MOBILE MENU -->
+<div id="mobileMenuPanel">
+  <nav style="display:flex;flex-direction:column;gap:4px;margin-bottom:16px;">
+    <a href="#" style="display:block;padding:12px 16px;border-radius:10px;font-size:.92rem;font-weight:700;color:var(--t1);transition:all .2s;letter-spacing:.04em;text-transform:uppercase;" onclick="navClick(document.querySelector('[data-page=home]'),'home');return false" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">Home</a>
+    <a href="#" style="display:block;padding:12px 16px;border-radius:10px;font-size:.92rem;font-weight:700;color:var(--t1);transition:all .2s;letter-spacing:.04em;text-transform:uppercase;" onclick="navClick(document.querySelector('[data-page=categories]'),'categories');return false" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">Categories</a>
+    <a href="#" style="display:block;padding:12px 16px;border-radius:10px;font-size:.92rem;font-weight:700;color:var(--t1);transition:all .2s;letter-spacing:.04em;text-transform:uppercase;" onclick="navClick(document.querySelector('[data-page=products]'),'products');return false" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">Products</a>
+    <a href="#" style="display:block;padding:12px 16px;border-radius:10px;font-size:.92rem;font-weight:700;color:var(--t1);transition:all .2s;letter-spacing:.04em;text-transform:uppercase;" onclick="navClick(document.querySelector('[data-page=blog]'),'blog');return false" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">Journal</a>
+    <a href="#" style="display:block;padding:12px 16px;border-radius:10px;font-size:.92rem;font-weight:700;color:var(--t1);transition:all .2s;letter-spacing:.04em;text-transform:uppercase;" onclick="navClick(document.querySelector('[data-page=contact]'),'contact');return false" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">Contact</a>
+  </nav>
+  <div style="display:flex;align-items:center;gap:10px;padding-top:14px;border-top:1px solid var(--border);">
+    <div class="search-wrap" style="flex:1;">
+      <input id="mobileSearch" type="text" placeholder="Search…" oninput="liveSearch(this.value)" onkeydown="if(event.key==='Enter')doSearch()" style="width:100%;"/>
+      <button onclick="doSearch()"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg></button>
+      <div id="searchDropdown2" class="search-dropdown"></div>
+    </div>
+    <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode">
+      <span class="t-sun">☀️</span><span class="t-moon">🌙</span>
+    </button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ HOME PAGE ═══════════════════════════ -->
+<div id="page-home" class="page active">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-content">
+      <div class="hero-badge stagger-in" style="--stagger-delay:0ms">
+        <div class="review-avatar-stack">
+          <div class="rav" style="background:#C9A84C">A</div>
+          <div class="rav" style="background:#8A6F30">K</div>
+          <div class="rav" style="background:#6B4F20">T</div>
+        </div>
+        <div class="review-text">
+          <div class="stars">★★★★★</div>
+          <span>2,400+ happy customers</span>
+        </div>
+      </div>
+
+      <h1 class="hero-title stagger-in" style="--stagger-delay:80ms">
+        Dress with<br><em>intention.</em><br>Live in <span class="green-word">style.</span>
+      </h1>
+
+      <p class="hero-sub stagger-in" style="--stagger-delay:160ms">
+        Finexy curates the finest fashion for the modern Nigerian — where premium quality meets bold self-expression.
+      </p>
+
+      <div class="hero-btns stagger-in" style="--stagger-delay:240ms">
+        <button class="btn-primary" onclick="navClick(document.querySelector('[data-page=products]'),'products')">
+          Shop Now
+          <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <button class="btn-ghost" onclick="navClick(document.querySelector('[data-page=categories]'),'categories')">
+          Browse Categories
+        </button>
+      </div>
+
+      <div class="hero-stats stagger-in" style="--stagger-delay:320ms">
+        <div class="stat">
+          <div class="stat-n" id="statCategories">9</div>
+          <div class="stat-l">Categories</div>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <div class="stat-n" id="statProducts">0</div>
+          <div class="stat-l">Products</div>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <div class="stat-n" id="statItems">0</div>
+          <div class="stat-l">In Stock</div>
+        </div>
+        <div class="stat-div"></div>
+        <div class="stat">
+          <div class="stat-n" id="statRating">—</div>
+          <div class="stat-l">Avg Rating</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-visual stagger-in" style="--stagger-delay:100ms">
+      <div class="hero-img-grid" id="heroImgGrid">
+        <img src="https://images.unsplash.com/photo-1509631179647-0177331693ae?w=600&q=80" alt="Fashion" loading="lazy"/>
+        <img src="https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=400&q=80" alt="Shoes" loading="lazy"/>
+        <img src="https://images.unsplash.com/photo-1523381210434-271e8be1f52b?w=400&q=80" alt="Clothing" loading="lazy"/>
+      </div>
+      <div class="hero-float-card card-a">
+        <div class="hero-float-icon" style="background:rgba(201,168,76,.12);">🛍️</div>
+        <div class="hero-float-text">
+          <strong>Free Delivery</strong>
+          <span>On orders over ₦50,000</span>
+        </div>
+      </div>
+      <div class="hero-float-card card-b">
+        <div class="hero-float-icon" style="background:rgba(201,168,76,.12);">✦</div>
+        <div class="hero-float-text">
+          <strong>Premium Quality</strong>
+          <span>Curated collections</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BRANDS STRIP -->
+  <div class="brands-strip">
+    <div class="brands-scroll" id="brandsScroll">
+      <div class="brand-item">SHOES <span>✦</span></div>
+      <div class="brand-item">CLOTHING <span>✦</span></div>
+      <div class="brand-item">ACCESSORIES <span>✦</span></div>
+      <div class="brand-item">BAGS <span>✦</span></div>
+      <div class="brand-item">SPORTSWEAR <span>✦</span></div>
+      <div class="brand-item">ELECTRONICS <span>✦</span></div>
+      <div class="brand-item">HEALTH & BEAUTY <span>✦</span></div>
+      <div class="brand-item">FOOD & DRINKS <span>✦</span></div>
+      <!-- Duplicate for seamless loop -->
+      <div class="brand-item">SHOES <span>✦</span></div>
+      <div class="brand-item">CLOTHING <span>✦</span></div>
+      <div class="brand-item">ACCESSORIES <span>✦</span></div>
+      <div class="brand-item">BAGS <span>✦</span></div>
+      <div class="brand-item">SPORTSWEAR <span>✦</span></div>
+      <div class="brand-item">ELECTRONICS <span>✦</span></div>
+      <div class="brand-item">HEALTH & BEAUTY <span>✦</span></div>
+      <div class="brand-item">FOOD & DRINKS <span>✦</span></div>
+    </div>
+  </div>
+
+  <!-- WHY FINEXY -->
+  <div class="section">
+    <div class="section-head center">
+      <div>
+        <div class="section-eyebrow">Why Finexy</div>
+        <h2 class="section-title">Shopping reimagined</h2>
+      </div>
+    </div>
+    <div class="why-grid">
+      <div class="why-card">
+        <div class="why-icon">🛡️</div>
+        <h4>Authentic Guarantee</h4>
+        <p>Every product is verified authentic. We stand behind every item we sell — no compromises.</p>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">⚡</div>
+        <h4>Lightning Fast Delivery</h4>
+        <p>Same-day dispatch in Lagos. Nationwide delivery in 2–5 working days across Nigeria.</p>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">↩️</div>
+        <h4>Hassle-Free Returns</h4>
+        <p>Not happy? Return within 14 days for a full refund — no questions asked.</p>
+      </div>
+      <div class="why-card">
+        <div class="why-icon">💬</div>
+        <h4>Expert Style Advice</h4>
+        <p>Our team of stylists is available 7 days a week to help you find exactly what you need.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- FEATURED CATEGORIES (home) -->
+  <div class="section" style="padding-top:0">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">Collections</div>
+        <h2 class="section-title">Shop by category</h2>
+      </div>
+      <button class="btn-outline" onclick="navClick(document.querySelector('[data-page=categories]'),'categories')">View all →</button>
+    </div>
+    <div class="cat-grid" id="homeCatGrid"></div>
+  </div>
+
+  <!-- FEATURED PRODUCTS -->
+  <div class="section" style="padding-top:0">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">Curated for you</div>
+        <h2 class="section-title">Featured products</h2>
+      </div>
+      <button class="btn-outline" onclick="navClick(document.querySelector('[data-page=products]'),'products')">Shop all →</button>
+    </div>
+    <div class="product-grid" id="featuredGrid"></div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <div class="logo" style="color:rgba(255,255,255,.9);font-size:1.8rem;">
+          <svg class="logo-icon" viewBox="0 0 38 38"><defs><linearGradient id="lg2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#C9A84C"/><stop offset="100%" stop-color="#8A6F30"/></linearGradient></defs><path d="M19 2L35 11V27L19 36L3 27V11L19 2Z" fill="url(#lg2)"/><path d="M13 19L17 23L25 15" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          FINEXY
+        </div>
+        <p class="footer-tagline">Where premium fashion meets the vibrant spirit of Nigeria. Look good, feel great, live boldly.</p>
+        <div class="footer-social">
+          <a href="#">Ig</a><a href="#">Tw</a><a href="#">Fb</a><a href="#">Wh</a>
+        </div>
+      </div>
+      <div class="footer-col">
+        <h4>Shop</h4>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=products]'),'products');return false">All Products</a>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=categories]'),'categories');return false">Categories</a>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=products]'),'products');return false">New Arrivals</a>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=products]'),'products');return false">Best Sellers</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=blog]'),'blog');return false">Journal</a>
+        <a href="#" onclick="navClick(document.querySelector('[data-page=contact]'),'contact');return false">Contact Us</a>
+        <a href="#">About Finexy</a>
+        <a href="#">Careers</a>
+      </div>
+      <div class="footer-col">
+        <h4>Support</h4>
+        <a href="#">Track Order</a>
+        <a href="#">Returns Policy</a>
+        <a href="#">FAQ</a>
+        <a href="#">Privacy Policy</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2026 <span>Finexy</span>. All rights reserved. Built with ♥ in Lagos.</p>
+      <p>₦ Nigerian Naira · Prices include VAT</p>
+    </div>
+  </footer>
+</div>
+
+<!-- ═══════════════════════════ CATEGORIES PAGE ═══════════════════════════ -->
+<div id="page-categories" class="page">
+  <div class="page-hero-banner" data-title="SHOP">
+    <h2>All Collections</h2>
+    <p>Nine curated categories. One destination.</p>
+  </div>
+  <div class="section">
+    <div class="cat-stats-strip">
+      <div class="cat-stat"><div class="cat-stat-n" id="statCategories2">9</div><div class="cat-stat-l">Categories</div></div>
+      <div class="cat-stat"><div class="cat-stat-n" id="statProducts2">0</div><div class="cat-stat-l">Total Products</div></div>
+      <div class="cat-stat"><div class="cat-stat-n" id="statItems2">0</div><div class="cat-stat-l">Items in Stock</div></div>
+      <div class="cat-stat"><div class="cat-stat-n" id="statRating2">—</div><div class="cat-stat-l">Avg Rating</div></div>
+    </div>
+    <div class="cat-grid" id="allCatGrid"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ PRODUCTS PAGE ═══════════════════════════ -->
+<div id="page-products" class="page">
+  <div class="page-hero-banner" data-title="PRODUCTS">
+    <h2>All Products</h2>
+    <p>Handpicked. Premium. Yours.</p>
+  </div>
+  <div class="section">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:4px;">
+      <div class="filters-bar" id="filtersBar" style="margin-bottom:0;padding-bottom:0;flex:1;min-width:0;"></div>
+      <select class="sort-select" id="sortSelect" onchange="sortProducts(this.value)">
+        <option value="">Sort: Default</option>
+        <option value="price-asc">Price: Low → High</option>
+        <option value="price-desc">Price: High → Low</option>
+        <option value="rating">Top Rated</option>
+        <option value="name">Name A–Z</option>
+      </select>
+    </div>
+    <div class="product-grid" id="allProductsGrid"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ PRODUCT DETAIL ═══════════════════════════ -->
+<div id="page-detail" class="page">
+  <div class="section">
+    <button class="back-btn" onclick="goBack()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      Back
+    </button>
+    <div id="productDetail"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ BLOG PAGE ═══════════════════════════ -->
+<div id="page-blog" class="page">
+  <div class="page-hero-banner" data-title="JOURNAL">
+    <h2>The Finexy Journal</h2>
+    <p>Style guides, trend reports, and insider tips.</p>
+  </div>
+  <div class="section">
+    <div class="blog-grid" id="blogGrid"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ BLOG DETAIL ═══════════════════════════ -->
+<div id="page-blog-detail" class="page">
+  <div class="section">
+    <button class="back-btn" onclick="showPage('blog');document.querySelector('[data-page=blog]').classList.add('active')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      Back to Journal
+    </button>
+    <div class="blog-detail-wrap" id="blogDetailContent"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ CONTACT PAGE ═══════════════════════════ -->
+<div id="page-contact" class="page">
+  <div class="page-hero-banner" data-title="CONTACT">
+    <h2>Get in Touch</h2>
+    <p>We'd love to hear from you.</p>
+  </div>
+  <div class="section">
+    <div class="contact-layout">
+      <div class="contact-info">
+        <div class="section-eyebrow">Reach us</div>
+        <h2 style="font-family:'Playfair Display',serif;font-size:2.2rem;font-weight:700;margin-bottom:16px;">We're here for you</h2>
+        <p>Whether you have a question about a product, your order, or just want to say hello — our team is always ready to help.</p>
+        <div class="contact-item">
+          <div class="ci-icon">📍</div>
+          <div class="ci-text"><strong>Visit Us</strong><span>Victoria Island, Lagos, Nigeria</span></div>
+        </div>
+        <div class="contact-item">
+          <div class="ci-icon">📞</div>
+          <div class="ci-text"><strong>Call Us</strong><span>+234 800 FINEXY (346399)</span></div>
+        </div>
+        <div class="contact-item">
+          <div class="ci-icon">✉️</div>
+          <div class="ci-text"><strong>Email Us</strong><span>hello@finexy.com</span></div>
+        </div>
+        <div class="contact-item">
+          <div class="ci-icon">⏰</div>
+          <div class="ci-text"><strong>Hours</strong><span>Mon–Sat: 9am – 7pm WAT</span></div>
+        </div>
+      </div>
+      <div class="contact-form">
+        <h3>Send a Message</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div class="form-group">
+            <label>First Name</label>
+            <input type="text" placeholder="John"/>
+          </div>
+          <div class="form-group">
+            <label>Last Name</label>
+            <input type="text" placeholder="Doe"/>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" placeholder="john@email.com"/>
+        </div>
+        <div class="form-group">
+          <label>Subject</label>
+          <select>
+            <option>Order Enquiry</option>
+            <option>Product Question</option>
+            <option>Return / Refund</option>
+            <option>Style Advice</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Message</label>
+          <textarea placeholder="How can we help you?"></textarea>
+        </div>
+        <button class="btn-primary" style="width:100%;justify-content:center;" onclick="showToast('✉️ Message sent! We\'ll reply within 24 hours.',4000)">
+          Send Message
+          <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ SEARCH RESULTS PAGE ═══════════════════════════ -->
+<div id="page-search" class="page">
+  <div class="page-hero-banner" data-title="SEARCH">
+    <h2 id="searchTitle">Search Results</h2>
+  </div>
+  <div class="section">
+    <div class="product-grid" id="searchGrid"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ AUTH MODAL ═══════════════════════════ -->
+<div id="storeAuthOverlay" onclick="closeStoreAuth(event)">
+  <div id="storeAuthModal" style="background:var(--surface);border-radius:28px;padding:40px;width:min(460px,calc(100vw - 40px));box-shadow:var(--shadow-xl);border:1px solid var(--border);position:relative;z-index:2001;animation:modalPop .38s var(--ease-spring) both;">
+
+    <!-- Tab switcher -->
+    <div id="saTabRow" style="display:flex;background:var(--surface2);border-radius:12px;padding:4px;margin-bottom:28px;gap:4px;">
+      <button id="saTabLogin"  onclick="switchStoreTab('login')"  style="flex:1;padding:10px;border-radius:9px;border:none;font-size:.82rem;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;background:var(--surface);color:var(--t1);box-shadow:var(--shadow-sm);transition:all .2s;cursor:pointer;letter-spacing:.04em;text-transform:uppercase;">Sign In</button>
+      <button id="saTabSignup" onclick="switchStoreTab('signup')" style="flex:1;padding:10px;border-radius:9px;border:none;font-size:.82rem;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;background:transparent;color:var(--t2);transition:all .2s;cursor:pointer;letter-spacing:.04em;text-transform:uppercase;">Create Account</button>
+    </div>
+
+    <!-- LOGIN FORM -->
+    <div id="saLoginForm">
+      <h2 style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:700;color:var(--t1);margin-bottom:6px;">Welcome back ✨</h2>
+      <p style="color:var(--t2);font-size:.85rem;margin-bottom:24px;font-family:'Plus Jakarta Sans',sans-serif;">Sign in to your Finexy account.</p>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Email Address</label>
+        <input id="saLEmail" type="email" placeholder="john@email.com" style="width:100%;padding:13px 16px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+      </div>
+      <div style="margin-bottom:20px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Password</label>
+        <div style="position:relative;">
+          <input id="saLPw" type="password" placeholder="Your password" style="width:100%;padding:13px 44px 13px 16px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''" onkeydown="if(event.key==='Enter')doStoreLogin()"/>
+          <button onclick="toggleSaPw('saLPw',this)" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;font-size:.8rem;">👁</button>
+        </div>
+      </div>
+      <div id="saLMsg" style="display:none;margin-bottom:14px;padding:10px 14px;border-radius:10px;font-size:.8rem;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;"></div>
+      <button onclick="doStoreLogin()" id="saLBtn" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--t1);color:var(--t-inv);font-size:.88rem;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;letter-spacing:.06em;text-transform:uppercase;" onmouseover="this.style.background='var(--brand)'" onmouseout="this.style.background='var(--t1)'">
+        Sign In
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <p style="text-align:center;font-size:.78rem;color:var(--t3);margin-top:16px;font-family:'Plus Jakarta Sans',sans-serif;">Forgot your password? <button onclick="switchStoreTab('forgot')" style="color:var(--brand);font-weight:800;background:none;border:none;cursor:pointer;font-size:.78rem;font-family:'Plus Jakarta Sans',sans-serif;">Reset it →</button></p>
+    </div>
+
+    <!-- SIGNUP FORM -->
+    <div id="saSignupForm" style="display:none;">
+      <h2 style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:700;color:var(--t1);margin-bottom:6px;">Join Finexy ✨</h2>
+      <p style="color:var(--t2);font-size:.85rem;margin-bottom:24px;font-family:'Plus Jakarta Sans',sans-serif;">Create your account and start shopping today.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div>
+          <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">First Name</label>
+          <input id="saSFirst" type="text" placeholder="John" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+        </div>
+        <div>
+          <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Last Name</label>
+          <input id="saSLast" type="text" placeholder="Doe" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Email Address</label>
+        <input id="saSEmail" type="email" placeholder="john@email.com" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Phone Number</label>
+        <input id="saSPhone" type="tel" placeholder="+234 800 000 0000" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+      </div>
+      <div style="margin-bottom:20px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Password</label>
+        <div style="position:relative;">
+          <input id="saSPw" type="password" placeholder="Minimum 6 characters" style="width:100%;padding:12px 44px 12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+          <button onclick="toggleSaPw('saSPw',this)" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t3);cursor:pointer;font-size:.8rem;">👁</button>
+        </div>
+      </div>
+      <div id="saSMsg" style="display:none;margin-bottom:14px;padding:10px 14px;border-radius:10px;font-size:.8rem;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;"></div>
+      <button onclick="doStoreSignup()" id="saSBtn" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--t1);color:var(--t-inv);font-size:.88rem;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;letter-spacing:.06em;text-transform:uppercase;" onmouseover="this.style.background='var(--brand)'" onmouseout="this.style.background='var(--t1)'">
+        Create Account
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <p style="text-align:center;font-size:.76rem;color:var(--t3);margin-top:14px;font-family:'Plus Jakarta Sans',sans-serif;">By creating an account, you agree to our <span style="color:var(--brand);font-weight:700;">Terms & Privacy Policy</span></p>
+    </div>
+
+    <!-- FORGOT PASSWORD -->
+    <div id="saForgotForm" style="display:none;">
+      <h2 style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:700;color:var(--t1);margin-bottom:6px;">Reset Password 🔑</h2>
+      <p style="color:var(--t2);font-size:.85rem;margin-bottom:24px;font-family:'Plus Jakarta Sans',sans-serif;">Enter your email and we'll send a reset link.</p>
+      <div style="margin-bottom:20px;">
+        <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">Email Address</label>
+        <input id="saFEmail" type="email" placeholder="john@email.com" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
+      </div>
+      <div id="saFMsg" style="display:none;margin-bottom:14px;padding:10px 14px;border-radius:10px;font-size:.8rem;font-weight:700;font-family:'Plus Jakarta Sans',sans-serif;"></div>
+      <button onclick="doStoreForgot()" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--t1);color:var(--t-inv);font-size:.88rem;font-weight:800;font-family:'Plus Jakarta Sans',sans-serif;cursor:pointer;transition:all .2s;letter-spacing:.06em;text-transform:uppercase;" onmouseover="this.style.background='var(--brand)'" onmouseout="this.style.background='var(--t1)'">Send Reset Link</button>
+      <p style="text-align:center;font-size:.78rem;color:var(--t3);margin-top:16px;font-family:'Plus Jakarta Sans',sans-serif;"><button onclick="switchStoreTab('login')" style="color:var(--brand);font-weight:800;background:none;border:none;cursor:pointer;font-size:.78rem;font-family:'Plus Jakarta Sans',sans-serif;">← Back to Sign In</button></p>
+    </div>
+
+    <!-- SUCCESS STATE -->
+    <div id="saSuccessState" style="display:none;text-align:center;padding:16px 0;">
+      <div style="width:72px;height:72px;background:linear-gradient(135deg,var(--brand),#8A6F30);border-radius:50%;display:grid;place-items:center;margin:0 auto 20px;font-size:2rem;color:#fff;">✓</div>
+      <h3 id="saSuccessTitle" style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:var(--t1);margin-bottom:8px;"></h3>
+      <p id="saSuccessMsg" style="color:var(--t2);font-size:.85rem;line-height:1.6;font-family:'Plus Jakarta Sans',sans-serif;"></p>
+    </div>
+  </div>
+</div>
+
+<script src="products.js"></script>
+<script src="script.js"></script>
+<script>
+/* ─── THEME TOGGLE ─────────────────────────── */
+function toggleTheme() {
+  var root    = document.documentElement;
+  var current = root.getAttribute('data-theme') || 'light';
+  var next    = current === 'dark' ? 'light' : 'dark';
+  document.body.classList.add('theme-transitioning');
+  root.setAttribute('data-theme', next);
+  localStorage.setItem('finexy-theme', next);
+  setTimeout(function(){ document.body.classList.remove('theme-transitioning'); }, 440);
+}
+/* Keyboard shortcut */
+document.addEventListener('keydown', function(e){
+  if ((e.ctrlKey || e.metaKey) && e.key === 'd') { e.preventDefault(); toggleTheme(); }
+});
+
+/* ─── SYNC CATEGORY STATS STRIP ────────────── */
+/* Mirror the main stat IDs into the categories page stats strip */
+const _statMirror = {
+  statCategories: 'statCategories2',
+  statProducts:   'statProducts2',
+  statItems:      'statItems2',
+  statRating:     'statRating2',
+};
+const _origUpdateCategoryStats = window.updateCategoryStats;
+function updateCategoryStats() {
+  if (typeof _origUpdateCategoryStats === 'function') _origUpdateCategoryStats();
+  Object.entries(_statMirror).forEach(([src, dst]) => {
+    const s = document.getElementById(src);
+    const d = document.getElementById(dst);
+    if (s && d) d.textContent = s.textContent;
+  });
+}
+window.updateCategoryStats = updateCategoryStats;
+</script>
+</body>
+</html>
