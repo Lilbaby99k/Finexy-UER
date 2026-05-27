@@ -10,8 +10,10 @@
 const SUPA_URL = 'https://ymkgqqerdocfcgyphfzs.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlta2dxcWVyZG9jZmNneXBoZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0ODA3MzUsImV4cCI6MjA5NTA1NjczNX0.SqwwSpwvsstfumhpTJasSsGMbe0LAm7Z3N-H0U2PoVc';
 
-/* localStorage key used by the admin dashboard */
-const SHARED_INV_KEY = 'finexy_shared_inv';
+/* Supabase table names */
+const CART_TABLE    = 'store_carts';
+const SESSION_TABLE = 'store_sessions';
+const PREFS_TABLE   = 'store_preferences';
 
 /* ─── CATEGORY MAP: admin category name → store category id ─── */
 const ADMIN_CAT_MAP = {
@@ -126,23 +128,11 @@ async function loadAdminInventory() {
     const rows = await res.json();
     window._storeLoading = false;
 
-    /* Cache locally so cross-tab sync works */
-    localStorage.setItem(SHARED_INV_KEY, JSON.stringify(rows));
-
     mergeAdminProducts(rows);
     rebuildAll();
     if (rows.length > 0) showAdminBanner(rows.length);
   } catch (e) {
     window._storeLoading = false;
-    /* Fallback: use local cache if Supabase is unreachable */
-    const cached = localStorage.getItem(SHARED_INV_KEY);
-    if (cached) {
-      try {
-        const rows = JSON.parse(cached);
-        mergeAdminProducts(rows);
-        rebuildAll();
-      } catch (_) {}
-    }
     console.warn('[Finexy] Could not reach admin inventory:', e.message);
   }
 }
@@ -393,20 +383,6 @@ function _refreshOpenProductDetail(p) {
   }
 }
 
-/* ─── CROSS-TAB LIVE SYNC ───────────────────────── */
-/* When admin adds/edits/restocks products in another tab,
-   this event fires and the store updates immediately */
-window.addEventListener('storage', e => {
-  if (e.key === SHARED_INV_KEY && e.newValue) {
-    try {
-      const rows = JSON.parse(e.newValue);
-      mergeAdminProducts(rows);
-      rebuildAll();
-      showToast('🔄 Store updated with latest products!', 2500);
-    } catch (_) {}
-  }
-});
-
 /* ─── REBUILD ALL SECTIONS (called after merge) ─── */
 function rebuildAll() {
   buildHeroGrid();
@@ -467,7 +443,7 @@ function showAdminBanner(count) {
 }
 
 /* ─── STATE ─────────────────────────────────────── */
-let cart     = JSON.parse(localStorage.getItem('cp_cart') || '[]');
+let cart     = [];          /* populated async from Supabase after login */
 let prevPage = 'home';
 let toastTimer = null;
 let isTransitioning = false;
@@ -1060,7 +1036,50 @@ function changeCartQty(key, delta) {
   item.qty = Math.max(1, item.qty + delta);
   saveCart(); syncCart();
 }
-function saveCart() { localStorage.setItem('cp_cart', JSON.stringify(cart)); }
+/* ─── CART PERSISTENCE (Supabase) ───────────────── */
+async function saveCart() {
+  if (!STORE_USER) return;               /* guests: cart is in-memory only */
+  try {
+    const userId = STORE_USER.id;
+    /* Upsert into store_carts — one row per user */
+    await fetch(`${SUPA_URL}/rest/v1/${CART_TABLE}?user_id=eq.${userId}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY },
+    });
+    if (cart.length > 0) {
+      await fetch(`${SUPA_URL}/rest/v1/${CART_TABLE}`, {
+        method: 'POST',
+        headers: {
+          'apikey':       SUPA_KEY,
+          'Authorization':'Bearer ' + SUPA_KEY,
+          'Content-Type': 'application/json',
+          'Prefer':       'return=minimal',
+        },
+        body: JSON.stringify({ user_id: userId, items: JSON.stringify(cart), updated_at: new Date().toISOString() }),
+      });
+    }
+  } catch(e) {
+    console.warn('[Finexy] Cart save failed:', e.message);
+  }
+}
+
+async function loadCart() {
+  if (!STORE_USER) { cart = []; syncCart(); return; }
+  try {
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/${CART_TABLE}?user_id=eq.${STORE_USER.id}&select=items&limit=1`,
+      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
+    );
+    if (res.ok) {
+      const rows = await res.json();
+      cart = rows.length && rows[0].items ? JSON.parse(rows[0].items) : [];
+    }
+  } catch(e) {
+    cart = [];
+    console.warn('[Finexy] Cart load failed:', e.message);
+  }
+  syncCart();
+}
 function syncCart() {
   const count = cart.reduce((s, i) => s + i.qty, 0);
   const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
@@ -1772,26 +1791,88 @@ async function storeApiCall(path, options = {}) {
 // ── Session ──────────────────────────────────────────────────────
 let STORE_USER = null;
 
-function loadStoreSession() {
+/* Generate a simple browser fingerprint to use as session token */
+function _sessionToken() {
+  const raw = navigator.userAgent + screen.width + screen.height + navigator.language;
+  let h = 0;
+  for (let i = 0; i < raw.length; i++) { h = (Math.imul(31, h) + raw.charCodeAt(i)) | 0; }
+  return 'sess_' + Math.abs(h).toString(36) + '_' + Date.now().toString(36);
+}
+
+/* We keep a lightweight session key in sessionStorage (tab-local, cleared on close)
+   so the user stays logged in for the tab's lifetime without hitting Supabase
+   on every action.  The canonical source of truth is the store_sessions table. */
+const _SESSION_KEY = 'finexy_sess_token';
+
+async function loadStoreSession() {
   try {
-    const raw = localStorage.getItem('cp_store_session');
-    if (raw) {
-      STORE_USER = JSON.parse(raw);
+    const token = sessionStorage.getItem(_SESSION_KEY);
+    if (!token) return;
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/${SESSION_TABLE}?token=eq.${encodeURIComponent(token)}&select=user_data&limit=1`,
+      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
+    );
+    if (!res.ok) return;
+    const rows = await res.json();
+    if (rows.length && rows[0].user_data) {
+      STORE_USER = typeof rows[0].user_data === 'string'
+        ? JSON.parse(rows[0].user_data) : rows[0].user_data;
       updateNavAccount();
+      await loadCart();
     }
-  } catch(e) {}
+  } catch(e) {
+    console.warn('[Finexy] Session restore failed:', e.message);
+  }
 }
 
-function saveStoreSession(user) {
+async function saveStoreSession(user) {
   STORE_USER = user;
-  localStorage.setItem('cp_store_session', JSON.stringify(user));
   updateNavAccount();
+  /* Write session row to Supabase */
+  try {
+    const token = _sessionToken();
+    sessionStorage.setItem(_SESSION_KEY, token);
+    await fetch(`${SUPA_URL}/rest/v1/${SESSION_TABLE}`, {
+      method: 'POST',
+      headers: {
+        'apikey':       SUPA_KEY,
+        'Authorization':'Bearer ' + SUPA_KEY,
+        'Content-Type': 'application/json',
+        'Prefer':       'return=minimal',
+      },
+      body: JSON.stringify({
+        token,
+        user_id:    user.id   || null,
+        user_data:  JSON.stringify(user),
+        created_at: new Date().toISOString(),
+      }),
+    });
+  } catch(e) {
+    console.warn('[Finexy] Session save failed:', e.message);
+  }
+  await loadCart();
 }
 
-function clearStoreSession() {
-  STORE_USER = null;
-  localStorage.removeItem('cp_store_session');
+async function clearStoreSession() {
+  const token = sessionStorage.getItem(_SESSION_KEY);
+  STORE_USER  = null;
+  sessionStorage.removeItem(_SESSION_KEY);
+  cart = []; syncCart();
   updateNavAccount();
+  /* Delete session row from Supabase */
+  if (token) {
+    try {
+      await fetch(
+        `${SUPA_URL}/rest/v1/${SESSION_TABLE}?token=eq.${encodeURIComponent(token)}`,
+        {
+          method: 'DELETE',
+          headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY },
+        }
+      );
+    } catch(e) {
+      console.warn('[Finexy] Session delete failed:', e.message);
+    }
+  }
 }
 
 function updateNavAccount() {
@@ -1907,8 +1988,8 @@ function navigateToOrders() {
   showToast('📦 Order history coming soon!', 3000);
 }
 
-function storeLogout() {
-  clearStoreSession();
+async function storeLogout() {
+  await clearStoreSession();
   document.getElementById('storeUserDropdown').style.display = 'none';
   showToast('👋 You have been signed out.', 3000);
 }
@@ -1930,7 +2011,7 @@ async function doStoreLogin() {
       btn.innerHTML = 'Sign In <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
       btn.disabled = false; return;
     }
-    saveStoreSession(user);
+    await saveStoreSession(user);
     showSaMsg('saLMsg', `Welcome back, ${user.first}! 🎉`, 'success');
     setTimeout(() => { goToDestination(); }, 900);
   } catch(e) {
@@ -1969,7 +2050,7 @@ async function doStoreSignup() {
       body: JSON.stringify({ first, last, email, phone, password: pw, created_at: new Date().toISOString() }),
     });
     const newUser = result[0];
-    saveStoreSession(newUser);
+    await saveStoreSession(newUser);
 
     // Show success state
     document.getElementById('saSignupForm').style.display = 'none';
@@ -2004,5 +2085,5 @@ async function doStoreForgot() {
 
 // ── Init on page load ──────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadStoreSession();
+  (async () => { await loadStoreSession(); })();
 });
