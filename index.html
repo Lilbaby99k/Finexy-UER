@@ -2,8 +2,10 @@
 <html lang="en" data-theme="light">
 <head>
   <script>
+    /* Theme: read from sessionStorage for zero-flash on reload.
+       Full Supabase sync happens after page load via initTheme(). */
     (function(){
-      var t = localStorage.getItem('finexy-theme') || 'light';
+      var t = sessionStorage.getItem('finexy-theme') || 'light';
       document.documentElement.setAttribute('data-theme', t);
     })();
   </script>
@@ -590,19 +592,83 @@
 <script src="script.js"></script>
 <script>
 /* ─── THEME TOGGLE ─────────────────────────── */
+const SUPA_URL_T = 'https://ymkgqqerdocfcgyphfzs.supabase.co';
+const SUPA_KEY_T = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlta2dxcWVyZG9jZmNneXBoZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk0ODA3MzUsImV4cCI6MjA5NTA1NjczNX0.SqwwSpwvsstfumhpTJasSsGMbe0LAm7Z3N-H0U2PoVc';
+
+async function _saveTheme(theme) {
+  sessionStorage.setItem('finexy-theme', theme);
+  /* If a user session exists, also persist to Supabase store_preferences */
+  const sessToken = sessionStorage.getItem('finexy_sess_token');
+  if (!sessToken) return;
+  try {
+    /* Get user_id from session */
+    const res = await fetch(
+      `${SUPA_URL_T}/rest/v1/store_sessions?token=eq.${encodeURIComponent(sessToken)}&select=user_id&limit=1`,
+      { headers: { 'apikey': SUPA_KEY_T, 'Authorization': 'Bearer ' + SUPA_KEY_T } }
+    );
+    if (!res.ok) return;
+    const rows = await res.json();
+    if (!rows.length || !rows[0].user_id) return;
+    const userId = rows[0].user_id;
+    /* Upsert theme preference */
+    await fetch(`${SUPA_URL_T}/rest/v1/store_preferences?user_id=eq.${userId}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPA_KEY_T, 'Authorization': 'Bearer ' + SUPA_KEY_T },
+    });
+    await fetch(`${SUPA_URL_T}/rest/v1/store_preferences`, {
+      method: 'POST',
+      headers: {
+        'apikey':       SUPA_KEY_T,
+        'Authorization':'Bearer ' + SUPA_KEY_T,
+        'Content-Type': 'application/json',
+        'Prefer':       'return=minimal',
+      },
+      body: JSON.stringify({ user_id: userId, theme, updated_at: new Date().toISOString() }),
+    });
+  } catch(e) { /* non-critical — sessionStorage already updated */ }
+}
+
+async function initTheme() {
+  /* If user is logged in, load their saved theme from Supabase */
+  const sessToken = sessionStorage.getItem('finexy_sess_token');
+  if (!sessToken) return;
+  try {
+    const sRes = await fetch(
+      `${SUPA_URL_T}/rest/v1/store_sessions?token=eq.${encodeURIComponent(sessToken)}&select=user_id&limit=1`,
+      { headers: { 'apikey': SUPA_KEY_T, 'Authorization': 'Bearer ' + SUPA_KEY_T } }
+    );
+    if (!sRes.ok) return;
+    const sRows = await sRes.json();
+    if (!sRows.length || !sRows[0].user_id) return;
+    const pRes = await fetch(
+      `${SUPA_URL_T}/rest/v1/store_preferences?user_id=eq.${sRows[0].user_id}&select=theme&limit=1`,
+      { headers: { 'apikey': SUPA_KEY_T, 'Authorization': 'Bearer ' + SUPA_KEY_T } }
+    );
+    if (!pRes.ok) return;
+    const pRows = await pRes.json();
+    if (pRows.length && pRows[0].theme) {
+      const savedTheme = pRows[0].theme;
+      sessionStorage.setItem('finexy-theme', savedTheme);
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    }
+  } catch(e) {}
+}
+
 function toggleTheme() {
   var root    = document.documentElement;
   var current = root.getAttribute('data-theme') || 'light';
   var next    = current === 'dark' ? 'light' : 'dark';
   document.body.classList.add('theme-transitioning');
   root.setAttribute('data-theme', next);
-  localStorage.setItem('finexy-theme', next);
+  _saveTheme(next);                         /* async — fire and forget */
   setTimeout(function(){ document.body.classList.remove('theme-transitioning'); }, 440);
 }
 /* Keyboard shortcut */
 document.addEventListener('keydown', function(e){
   if ((e.ctrlKey || e.metaKey) && e.key === 'd') { e.preventDefault(); toggleTheme(); }
 });
+/* Load saved theme after page init */
+document.addEventListener('DOMContentLoaded', function() { initTheme(); });
 
 /* ─── SYNC CATEGORY STATS STRIP ────────────── */
 /* Mirror the main stat IDs into the categories page stats strip */
