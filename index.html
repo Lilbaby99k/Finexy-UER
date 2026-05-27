@@ -449,38 +449,43 @@
       </div>
       <div class="contact-form">
         <h3>Send a Message</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-          <div class="form-group">
-            <label>First Name</label>
-            <input type="text" placeholder="John"/>
+        <div id="contactSuccess" style="display:none;background:#d1fae5;color:#065f46;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:.88rem;">
+          ✅ Message sent! We'll respond within 24 hours.
+        </div>
+        <form onsubmit="submitContact(event)">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+            <div class="form-group">
+              <label>First Name</label>
+              <input id="contactName" type="text" name="name" placeholder="John" required/>
+            </div>
+            <div class="form-group">
+              <label>Last Name</label>
+              <input type="text" placeholder="Doe"/>
+            </div>
           </div>
           <div class="form-group">
-            <label>Last Name</label>
-            <input type="text" placeholder="Doe"/>
+            <label>Email Address</label>
+            <input id="contactEmail" type="email" name="email" placeholder="john@email.com" required/>
           </div>
-        </div>
-        <div class="form-group">
-          <label>Email Address</label>
-          <input type="email" placeholder="john@email.com"/>
-        </div>
-        <div class="form-group">
-          <label>Subject</label>
-          <select>
-            <option>Order Enquiry</option>
-            <option>Product Question</option>
-            <option>Return / Refund</option>
-            <option>Style Advice</option>
-            <option>Other</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Message</label>
-          <textarea placeholder="How can we help you?"></textarea>
-        </div>
-        <button class="btn-primary" style="width:100%;justify-content:center;" onclick="showToast('✉️ Message sent! We\'ll reply within 24 hours.',4000)">
-          Send Message
-          <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-        </button>
+          <div class="form-group">
+            <label>Subject</label>
+            <select id="contactSubject" name="subject">
+              <option>Order Enquiry</option>
+              <option>Product Question</option>
+              <option>Return / Refund</option>
+              <option>Style Advice</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Message</label>
+            <textarea id="contactMessage" name="message" placeholder="How can we help you?" required></textarea>
+          </div>
+          <button type="submit" class="btn-primary" style="width:100%;justify-content:center;">
+            Send Message
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </form>
       </div>
     </div>
   </div>
