@@ -13,8 +13,31 @@ const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 /* localStorage key used by the admin dashboard */
 const SHARED_INV_KEY = 'finexy_shared_inv';
 
-/* ─── DISCOUNTS: read from localStorage (set by admin panel) ── */
+/* ─── DISCOUNTS: loaded from Supabase 'discounts' table ──────────
+   localStorage is used only as a short-lived cache (30s) so that
+   getStorefrontDiscount() stays synchronous for rendering, while
+   loadStorefrontDiscounts() refreshes the cache from Supabase.    */
 const DISC_KEY = 'finexy_discounts';
+const DISC_CACHE_TS_KEY = 'finexy_discounts_ts';
+const DISC_CACHE_TTL = 30000; /* 30 seconds */
+
+/* Refresh discount cache from Supabase — called on load + every 30s */
+async function loadStorefrontDiscounts() {
+  try {
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/discounts?select=*&expires_at=gt.${new Date().toISOString()}`,
+      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
+    );
+    if (!res.ok) return;
+    const rows = await res.json();
+    /* Normalise column name: Supabase stores expires_at, code uses expiresAt */
+    const normalised = rows.map(r => ({ sku: r.sku, pct: r.pct, expiresAt: r.expires_at }));
+    localStorage.setItem(DISC_KEY, JSON.stringify(normalised));
+    localStorage.setItem(DISC_CACHE_TS_KEY, Date.now().toString());
+    /* Rebuild storefront with fresh discount data */
+    rebuildAll();
+  } catch(_) { /* network error — keep using cached data */ }
+}
 
 function getStorefrontDiscount(sku) {
   try {
@@ -168,10 +191,11 @@ function mergeAdminProducts(adminRows) {
 /* ─── LOAD FROM SUPABASE ─────────────────────────── */
 async function loadAdminInventory() {
   window._storeLoading = true;
-  buildAllProducts(); // show loading spinner immediately
+  localStorage.removeItem(SHARED_INV_KEY);
+  buildAllProducts();
   try {
     const res = await fetch(
-      `${SUPA_URL}/rest/v1/inventory?select=*&order=created_at.asc`,
+      `${SUPA_URL}/rest/v1/inventory?select=*&order=id.asc`,
       {
         headers: {
           'apikey':        SUPA_KEY,
@@ -179,29 +203,38 @@ async function loadAdminInventory() {
         }
       }
     );
-    if (!res.ok) throw new Error(await res.text());
-    const rows = await res.json();
     window._storeLoading = false;
-
-    /* Cache locally so cross-tab sync works */
-    localStorage.setItem(SHARED_INV_KEY, JSON.stringify(rows));
-
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('[Finexy] Supabase error ' + res.status + ':', errText);
+      _showStoreError('Supabase error ' + res.status + ': ' + errText);
+      mergeAdminProducts([]); rebuildAll(); return;
+    }
+    const rows = await res.json();
+    console.log('[Finexy] Loaded ' + rows.length + ' products from Supabase');
+    if (rows.length === 0) {
+      _showStoreError('Supabase returned 0 products. Check your inventory table has data.');
+    }
     mergeAdminProducts(rows);
     rebuildAll();
     if (rows.length > 0) showAdminBanner(rows.length);
   } catch (e) {
     window._storeLoading = false;
-    /* Fallback: use local cache if Supabase is unreachable */
-    const cached = localStorage.getItem(SHARED_INV_KEY);
-    if (cached) {
-      try {
-        const rows = JSON.parse(cached);
-        mergeAdminProducts(rows);
-        rebuildAll();
-      } catch (_) {}
-    }
-    console.warn('[Finexy] Could not reach admin inventory:', e.message);
+    console.error('[Finexy] Network error:', e.message);
+    _showStoreError('Network error: ' + e.message + '. Is your Supabase project paused?');
+    mergeAdminProducts([]); rebuildAll();
   }
+}
+
+function _showStoreError(msg) {
+  const existing = document.getElementById('_supaDiag');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.id = '_supaDiag';
+  div.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e1e2e;color:#f38ba8;padding:14px 20px;border-radius:12px;font-size:.82rem;font-family:monospace;max-width:90vw;z-index:99999;box-shadow:0 4px 24px rgba(0,0,0,.4);border:1px solid #f38ba8;line-height:1.5;';
+  div.innerHTML = '<strong>Finexy Store Debug:</strong><br>' + msg + '<br><small style="opacity:.6">Click to dismiss</small>';
+  div.onclick = () => div.remove();
+  document.body.appendChild(div);
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -367,22 +400,59 @@ function startRealtimeStockSync() {
   ══════════════════════════════════════════════════ */
   async function pollInventory() {
     try {
+      /* ── FIX: fetch ALL columns so new products can be detected and added ── */
       const res = await fetch(
-        `${SUPA_URL}/rest/v1/inventory?select=sku,qty,low_at,updated&order=sku.asc`,
+        `${SUPA_URL}/rest/v1/inventory?select=*&order=id.asc`,
         { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
       );
       if (!res.ok) return;
       const rows = await res.json();
 
       let changed = false;
-      rows.forEach(row => {
-        const prod = STORE.products.find(p => p.sku === row.sku);
-        if (!prod) return;
-        const newQty = parseInt(row.qty) || 0;
-        if (prod.qty === newQty) return;   /* nothing changed — skip */
 
-        prod.qty = newQty;
-        prod.lowAt = parseInt(row.low_at) || 5;
+      /* ── Step 1: detect deleted products ── */
+      const incomingSkus = new Set(rows.map(r => r.sku));
+      const beforeCount  = STORE.products.length;
+      STORE.products = STORE.products.filter(p => incomingSkus.has(p.sku));
+      if (STORE.products.length !== beforeCount) changed = true;
+
+      /* ── Step 2: update existing / add new products ── */
+      rows.forEach(row => {
+        const idx = STORE.products.findIndex(p => p.sku === row.sku);
+
+        if (idx < 0) {
+          /* ── NEW product the storefront has never seen — add it fully ── */
+          const newProd = adminRowToStoreProduct(row);
+          const qty = newProd.qty;
+          if (qty === 0) {
+            newProd._outOfStock = true;  newProd._lowStock = false; newProd.badge = 'Out of Stock';
+          } else if (qty <= (newProd.lowAt || 5)) {
+            newProd._outOfStock = false; newProd._lowStock = true;  newProd.badge = 'Low Stock';
+          } else {
+            newProd._outOfStock = false; newProd._lowStock = false;
+          }
+          STORE.products.push(newProd);
+          changed = true;
+          return;
+        }
+
+        /* ── Existing product — check for any field changes ── */
+        const prod   = STORE.products[idx];
+        const newQty = parseInt(row.qty) || 0;
+        const newLowAt = parseInt(row.low_at) || 5;
+
+        /* Compare key fields to detect any change */
+        const qtyChanged   = prod.qty   !== newQty;
+        const priceChanged = prod.price !== (parseFloat(row.price) || 0);
+        const nameChanged  = prod.name  !== row.name;
+
+        if (!qtyChanged && !priceChanged && !nameChanged) return; /* nothing changed */
+
+        prod.qty   = newQty;
+        prod.price = parseFloat(row.price) || 0;
+        prod.name  = row.name;
+        prod.lowAt = newLowAt;
+
         if (newQty === 0) {
           prod._outOfStock = true;  prod._lowStock = false; prod.badge = 'Out of Stock';
         } else if (newQty <= prod.lowAt) {
@@ -411,10 +481,10 @@ function startRealtimeStockSync() {
   connectWebSocket();
 
   /* Poll immediately after 2s (catches any order placed just before WS connected),
-     then every 30s after that */
+     then every 10s after that — fast enough to catch new products within one poll cycle */
   setTimeout(() => {
     pollInventory();
-    pollInterval = setInterval(pollInventory, 30000);
+    pollInterval = setInterval(pollInventory, 10000);
   }, 2000);
 
   /* Also re-poll when tab becomes visible again (user switches back) */
@@ -451,18 +521,7 @@ function _refreshOpenProductDetail(p) {
 }
 
 /* ─── CROSS-TAB LIVE SYNC ───────────────────────── */
-/* When admin adds/edits/restocks products in another tab,
-   this event fires and the store updates immediately */
-window.addEventListener('storage', e => {
-  if (e.key === SHARED_INV_KEY && e.newValue) {
-    try {
-      const rows = JSON.parse(e.newValue);
-      mergeAdminProducts(rows);
-      rebuildAll();
-      showToast('🔄 Store updated with latest products!', 2500);
-    } catch (_) {}
-  }
-});
+/* Cross-tab product sync handled by Supabase Realtime WebSocket */
 
 /* ─── REBUILD ALL SECTIONS (called after merge) ─── */
 function rebuildAll() {
@@ -540,6 +599,9 @@ document.addEventListener('DOMContentLoaded', () => {
   buildFeatured();
   buildHomeCats();
   buildAllCats();
+  /* FIX: mark as loading BEFORE first render so the grid shows
+     the spinner instead of "No Products Yet" on first paint */
+  window._storeLoading = true;
   buildAllProducts();
   buildBlog();
   populateCategoryFilter();
@@ -548,6 +610,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Load admin inventory (async, non-blocking) */
   loadAdminInventory();
+
+  /* Load discounts from Supabase, then refresh every 30s */
+  loadStorefrontDiscounts();
+  setInterval(loadStorefrontDiscounts, 30000);
 
   /* Start Supabase Realtime WebSocket — live stock sync across all browsers */
   startRealtimeStockSync();
