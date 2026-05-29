@@ -88,7 +88,7 @@
       <div id="navAccountArea">
         <button class="nav-account-btn" onclick="openStoreAuth('login')" id="navSignInBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          Sign In
+          <span class="nav-signin-label">Sign In</span>
         </button>
         <div id="navUserMenu" style="display:none;position:relative;">
           <button class="nav-account-btn" onclick="toggleStoreUserMenu()" id="navUserBtn">
@@ -453,7 +453,7 @@
           ✅ Message sent! We'll respond within 24 hours.
         </div>
         <form onsubmit="submitContact(event)">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div class="form-row">
             <div class="form-group">
               <label>First Name</label>
               <input id="contactName" type="text" name="name" placeholder="John" required/>
@@ -538,7 +538,7 @@
     <div id="saSignupForm" style="display:none;">
       <h2 style="font-family:'Playfair Display',serif;font-size:1.6rem;font-weight:700;color:var(--t1);margin-bottom:6px;">Join Finexy ✨</h2>
       <p style="color:var(--t2);font-size:.85rem;margin-bottom:24px;font-family:'Plus Jakarta Sans',sans-serif;">Create your account and start shopping today.</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+      <div id="saSignupNameRow" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
         <div>
           <label style="font-size:.7rem;font-weight:800;color:var(--t2);display:block;margin-bottom:7px;text-transform:uppercase;letter-spacing:.12em;font-family:'Plus Jakarta Sans',sans-serif;">First Name</label>
           <input id="saSFirst" type="text" placeholder="John" style="width:100%;padding:12px 14px;border:1.5px solid var(--border);border-radius:12px;font-size:.88rem;color:var(--t1);background:var(--surface2);outline:none;font-family:'Plus Jakarta Sans',sans-serif;transition:border-color .2s;" onfocus="this.style.borderColor='var(--brand)';this.style.background='var(--surface)'" onblur="this.style.borderColor='';this.style.background=''"/>
@@ -593,7 +593,7 @@
   </div>
 </div>
 
-<script src="products.js"></script>
+<script src="Products.js"></script>
 <script src="script.js"></script>
 <script>
 /* ─── THEME TOGGLE ─────────────────────────── */
@@ -683,16 +683,23 @@ const _statMirror = {
   statItems:      'statItems2',
   statRating:     'statRating2',
 };
+/* FIX: Use a const arrow function — NOT a function declaration.
+   Function declarations are hoisted to the top of the script before
+   any code runs, so by the time line below executes,
+   window.updateCategoryStats was already overwritten by this very
+   block's hoisted declaration — causing infinite recursion.
+   A const is NOT hoisted, so the capture below correctly grabs
+   the original script.js version. */
 const _origUpdateCategoryStats = window.updateCategoryStats;
-function updateCategoryStats() {
+const _statMirrorWrapper = () => {
   if (typeof _origUpdateCategoryStats === 'function') _origUpdateCategoryStats();
   Object.entries(_statMirror).forEach(([src, dst]) => {
     const s = document.getElementById(src);
     const d = document.getElementById(dst);
     if (s && d) d.textContent = s.textContent;
   });
-}
-window.updateCategoryStats = updateCategoryStats;
+};
+window.updateCategoryStats = _statMirrorWrapper;
 </script>
 </body>
 </html>
